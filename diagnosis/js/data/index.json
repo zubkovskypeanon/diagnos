@@ -1,0 +1,18 @@
+[
+  {
+    "id": "hypertension",
+    "name": "Гипертоническая болезнь",
+    "file": "hypertension.json",
+    "ready": true,
+    "section": "cardiology",
+    "sectionName": "Кардиология"
+  },
+  {
+    "id": "heart_failure",
+    "name": "Хроническая сердечная недостаточность",
+    "file": "heart_failure.json",
+    "ready": true,
+    "section": "cardiology",
+    "sectionName": "Кардиология"
+  }
+]
