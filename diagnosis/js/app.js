@@ -202,6 +202,10 @@ function renderSingle(page) {
     wrap.appendChild(card);
   });
 
+  if (page.references) {
+    page.references.forEach(ref => wrap.appendChild(renderPageReference(page.id, ref)));
+  }
+
   if (page.id === 'risk') {
     wrap.appendChild(renderRiskTableToggle());
     wrap.appendChild(renderRiskFactorsListToggle());
@@ -212,6 +216,66 @@ function renderSingle(page) {
   return wrap;
 }
 
+// ---------- Generic справочные блоки (page.references) ----------
+// В отличие от 4 блоков ГБ выше (жёстко зашиты под page.id === 'risk' — легаси,
+// не трогаем), этот механизм полностью декларативный: любая страница любой
+// нозологии может объявить в JSON произвольные сворачиваемые подсказки —
+// таблицу (ref.table), сгруппированные списки (ref.groups) или плоский список
+// (ref.criteria) — без единой правки app.js.
+function renderPageReference(pageId, ref) {
+  const wrap = el('div', 'expand');
+  const key = 'page-ref-' + pageId + '-' + ref.label + '-open';
+  const isOpen = !!state[key];
+  const btn = el('button', 'expand-toggle');
+  btn.textContent = (isOpen ? 'Скрыть ' : 'Показать ') + ref.label.toLowerCase();
+  btn.onclick = () => { state[key] = !isOpen; renderPage(); };
+  wrap.appendChild(btn);
+  if (!isOpen) return wrap;
+
+  if (ref.table) {
+    const table = document.createElement('table');
+    table.className = 'risk-table';
+    let html = '<tr>' + ref.table.headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
+    ref.table.rows.forEach(row => {
+      html += '<tr>' + row.map(c => `<td>${c}</td>`).join('') + '</tr>';
+    });
+    table.innerHTML = html;
+    wrap.appendChild(table);
+  }
+
+  if (ref.note) {
+    const note = el('div', 'note');
+    note.innerHTML = `<i class="ti ti-info-circle"></i><span>${ref.note}</span>`;
+    wrap.appendChild(note);
+  }
+
+  if (ref.groups) {
+    ref.groups.forEach(group => {
+      const label = el('p', 'group-label');
+      label.textContent = group.heading;
+      wrap.appendChild(label);
+      const list = document.createElement('ul');
+      group.items.forEach(text => {
+        const li = document.createElement('li');
+        li.textContent = text;
+        list.appendChild(li);
+      });
+      wrap.appendChild(list);
+    });
+  }
+
+  if (ref.criteria) {
+    const list = document.createElement('ul');
+    ref.criteria.forEach(text => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      list.appendChild(li);
+    });
+    wrap.appendChild(list);
+  }
+
+  return wrap;
+}
 function renderSingleGrouped(page) {
   const wrap = el('div', 'stack');
   page.groups.forEach(group => {
