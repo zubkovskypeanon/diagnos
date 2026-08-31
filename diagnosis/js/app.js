@@ -3,7 +3,8 @@ const state = {
   nosologyId: null,
   data: null,
   pageIndex: -1, // -1 = экран выбора нозологии
-  answers: {}
+  answers: {},
+  icdPageOpen: false // отдельный экран выбора кода МКБ, поверх текущей pageIndex-страницы
 };
 
 const root = document.getElementById('app');
@@ -91,11 +92,13 @@ async function openNosology(item) {
   state.nosologyId = item.id;
   state.pageIndex = 0;
   state.answers = {};
+  state.icdPageOpen = false;
   renderPage();
 }
 
 // ---------- Рендер: страница мастера ----------
 function renderPage() {
+  if (state.icdPageOpen) { renderIcdPage(); return; }
   const page = state.data.pages[state.pageIndex];
   root.innerHTML = '';
 
@@ -194,13 +197,45 @@ function renderSingle(page) {
       card.appendChild(renderExpandable(opt, page.id));
     }
 
+    if (selected && opt.freetextField) {
+      card.appendChild(renderOptionFreetext(opt, page.id));
+    }
+
     card.onclick = (e) => {
-      if (e.target.closest('.expand-toggle')) return;
+      if (e.target.closest('.expand-toggle') || e.target.closest('.opt-freetext')) return;
       state.answers[page.id === 'risk' ? 'risk' : page.id] = id;
       renderPage();
     };
     wrap.appendChild(card);
   });
+
+  // Свободное текстовое поле уровня страницы (напр. точное значение размера язвы) —
+  // не привязано к конкретной опции, значение подставляется в diagnosisText выбранной опции
+  // через плейсхолдер {key}. Генерик: любая single-страница любой нозологии может это объявить.
+  // Если задан ff.unit — значение при сборке оборачивается в "(число unit)" автоматически,
+  // врач вводит только число.
+  if (page.freetextField) {
+    const ff = page.freetextField;
+    const stateKey = page.id + '__' + ff.key;
+    const row = el('div', 'inline-fields');
+    const input = document.createElement('input');
+    input.type = ff.type || 'text';
+    if (input.type === 'number') input.step = ff.step || '0.1';
+    input.placeholder = ff.placeholder || '';
+    input.value = state.answers[stateKey] || '';
+    input.oninput = () => { state.answers[stateKey] = input.value; };
+    commitOnEnter(input);
+    row.appendChild(input);
+    if (ff.unit) {
+      const unitLabel = el('span', null);
+      unitLabel.textContent = ff.unit;
+      unitLabel.style.alignSelf = 'center';
+      unitLabel.style.fontSize = '13px';
+      unitLabel.style.color = 'var(--text-secondary)';
+      row.appendChild(unitLabel);
+    }
+    wrap.appendChild(row);
+  }
 
   if (page.references) {
     page.references.forEach(ref => wrap.appendChild(renderPageReference(page.id, ref)));
@@ -299,6 +334,13 @@ function renderSingleGrouped(page) {
 function renderMulti(page) {
   if (!state.answers.findings) state.answers.findings = {};
   const wrap = el('div', 'stack');
+
+  if (page.note) {
+    const staticNote = el('div', 'note');
+    staticNote.innerHTML = `<i class="ti ti-info-circle"></i><span>${page.note}</span>`;
+    wrap.appendChild(staticNote);
+  }
+
   page.items.forEach(item => {
     const answer = state.answers.findings[item.id] || { checked: false };
     const card = el('div', 'card');
@@ -317,6 +359,13 @@ function renderMulti(page) {
     label.appendChild(span);
     card.appendChild(label);
 
+    // Раскрываемая подсказка-критерии под пунктом чекбокс-списка (напр. классификация
+    // Форрест под "Кровотечение") — тот же механизм, что и opt.criteria в single,
+    // показывается независимо от того, отмечен чекбокс или нет.
+    if (item.criteria) {
+      card.appendChild(renderExpandable(item, page.id));
+    }
+
     if (answer.checked && item.kind === 'degree') {
       const sel = document.createElement('select');
       item.options.forEach(d => {
@@ -333,6 +382,18 @@ function renderMulti(page) {
     if (answer.checked && item.kind === 'compound') {
       const row = el('div', 'inline-fields');
       item.fields.forEach(fld => {
+        // fld.type === 'freetext' — текстовое поле вместо select, для случаев, когда
+        // КР не даёт формального перечня значений (напр. локализация стеноза у ЯБ).
+        if (fld.type === 'freetext') {
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.placeholder = fld.placeholder || '';
+          input.value = answer[fld.key] || '';
+          input.oninput = () => { answer[fld.key] = input.value; state.answers.findings[item.id] = answer; };
+          commitOnEnter(input);
+          row.appendChild(input);
+          return;
+        }
         const sel = document.createElement('select');
         fld.options.forEach(v => {
           const o = document.createElement('option'); o.value = v; o.textContent = v;
@@ -352,6 +413,7 @@ function renderMulti(page) {
       input.placeholder = item.placeholder || '';
       input.value = answer.value || '';
       input.oninput = () => { answer.value = input.value; state.answers.findings[item.id] = answer; };
+      commitOnEnter(input);
       card.appendChild(input);
     }
 
@@ -370,6 +432,43 @@ function renderRadioRow(label, sub, hint, selected) {
   row.appendChild(dot);
   row.appendChild(text);
   return row;
+}
+
+// Свободное поле, привязанное к КОНКРЕТНОЙ опции single-страницы (в отличие от
+// page.freetextField, который относится ко всей странице целиком) — показывается,
+// только когда эта опция выбрана. Синяя подсказка сверху (opt.freetextField.note) +
+// поле + обычная (серая) подсказка снизу (opt.freetextField.hint). Пример — "Множественные"
+// язвы у ЯБ: конструктор считает локализацию/размер только для одной язвы (см. соседние
+// страницы), остальные врач вписывает вручную сюда.
+function renderOptionFreetext(opt, pageId) {
+  const wrap = el('div', 'opt-freetext');
+  wrap.style.marginTop = '10px';
+  const ff = opt.freetextField;
+  const stateKey = pageId + '-' + opt.id + '__' + ff.key;
+
+  if (ff.note) {
+    const note = el('div', 'note');
+    note.innerHTML = `<i class="ti ti-info-circle"></i><span>${ff.note}</span>`;
+    wrap.appendChild(note);
+  }
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = ff.placeholder || '';
+  input.value = state.answers[stateKey] || '';
+  input.style.width = '100%';
+  input.oninput = () => { state.answers[stateKey] = input.value; };
+  commitOnEnter(input);
+  wrap.appendChild(input);
+
+  if (ff.hint) {
+    const hint = el('p', 'option-hint');
+    hint.style.marginTop = '6px';
+    hint.textContent = ff.hint;
+    wrap.appendChild(hint);
+  }
+
+  return wrap;
 }
 
 function renderExpandable(opt, pageId) {
@@ -735,7 +834,39 @@ function renderModifyingFactorsListToggle() {
 }
 
 // ---------- Сборка итоговой строки (универсальная, не знает про конкретную нозологию) ----------
+// Диспетчер стиля: по умолчанию (assemblyStyle не задан) — старый стиль "предложение на
+// страницу через точку", сверенный дословно с примерами КР ГБ/ХСН, НЕ трогаем. Новый стиль
+// "flowing" — одно предложение через запятые (нужен ЯБ, т.к. официальных примеров формулировки
+// в этом КР нет вообще, и стиль ориентируется на реальную практику записи, а не на КР).
 function assembleDiagnosis() {
+  let result = state.data.assemblyStyle === 'flowing' ? assembleDiagnosisFlowing() : assembleDiagnosisSentence();
+  if (state.answers.icdCode) {
+    result = (result ? result + ' ' : '') + '(Код по МКБ-10: ' + state.answers.icdCode + ')';
+  }
+  return result;
+}
+
+// Текст single-страницы с учётом опционального page.freetextField (напр. точный размер
+// в см, введённый врачом отдельным полем и подставляемый в diagnosisText через {key}).
+// Общая для обоих стилей сборки — не дублируем логику подстановки.
+function buildSingleFragmentText(page, opt) {
+  if (!opt || !opt.diagnosisText) return '';
+  let text = opt.diagnosisText;
+  if (page.freetextField) {
+    const ff = page.freetextField;
+    const raw = state.answers[page.id + '__' + ff.key] || '';
+    const formatted = raw ? '(' + raw + (ff.unit ? ' ' + ff.unit : '') + ')' : '';
+    text = text.replace('{' + ff.key + '}', formatted);
+  }
+  if (opt.freetextField) {
+    const ff = opt.freetextField;
+    const raw = state.answers[page.id + '-' + opt.id + '__' + ff.key] || '';
+    if (raw) text += (ff.prefix || '') + raw;
+  }
+  return text.trim();
+}
+
+function assembleDiagnosisSentence() {
   const a = state.answers;
   const parts = [];
 
@@ -744,7 +875,8 @@ function assembleDiagnosis() {
     if (page.type === 'single') {
       const val = a[page.id === 'risk' ? 'risk' : page.id];
       const opt = page.options.find(o => o.id === val);
-      if (opt && opt.diagnosisText) parts.push(opt.diagnosisText);
+      const text = buildSingleFragmentText(page, opt);
+      if (text) parts.push(text);
     } else if (page.type === 'single_grouped') {
       if (a.degreeStatus && a.degreeStatus.diagnosisText) parts.push(a.degreeStatus.diagnosisText);
     } else if (page.type === 'multi') {
@@ -761,10 +893,45 @@ function assembleDiagnosis() {
   return parts.join(' ');
 }
 
+// "Flowing"-стиль: одно предложение, фрагменты соединяются через page.joiner (по умолчанию
+// ", "), первый непустой фрагмент — без джойнера (он же начинает предложение с заглавной,
+// т.к. это headline-страница). Регистр остальных фрагментов НЕ трогаем программно — каждый
+// diagnosisText пишется в JSON сразу с нужной буквы (это надёжнее авто-lowerCase, который
+// ломает аббревиатуры вроде "НПВП" при попадании в начало фрагмента).
+function assembleDiagnosisFlowing() {
+  const a = state.answers;
+  const fragments = []; // { text, joiner }
+
+  state.data.pages.forEach(page => {
+    if (page.suppressDiagnosisIf && conditionMet(page.suppressDiagnosisIf)) return;
+    const joiner = page.joiner !== undefined ? page.joiner : ', ';
+    if (page.type === 'single') {
+      const val = a[page.id];
+      const opt = page.options.find(o => o.id === val);
+      const text = buildSingleFragmentText(page, opt);
+      if (text) fragments.push({ text, joiner });
+    } else if (page.type === 'single_grouped') {
+      if (a.degreeStatus && a.degreeStatus.diagnosisText) fragments.push({ text: a.degreeStatus.diagnosisText, joiner });
+    } else if (page.type === 'multi') {
+      page.items.forEach(item => {
+        const f = a.findings && a.findings[item.id];
+        if (!f || !f.checked) return;
+        fragments.push({ text: renderFindingTemplate(item, f), joiner });
+      });
+    }
+  });
+
+  let result = '';
+  fragments.forEach((frag, i) => {
+    result += (i === 0 ? frag.text : frag.joiner + frag.text);
+  });
+  return result ? result.trim() + '.' : '';
+}
+
 function renderFindingTemplate(item, f) {
   if (item.kind === 'compound') {
     let t = item.template;
-    item.fields.forEach(fld => { t = t.replace('{' + fld.key + '}', f[fld.key] || fld.default); });
+    item.fields.forEach(fld => { t = t.replace('{' + fld.key + '}', f[fld.key] || fld.default || ''); });
     return t;
   }
   if (item.kind === 'degree') {
@@ -794,7 +961,66 @@ function renderResultBlock() {
   wrap.appendChild(label);
   wrap.appendChild(box);
   wrap.appendChild(btn);
+
+  // Кнопка кода МКБ — генерик, показывается для любой нозологии, у которой в JSON
+  // задан icd10 (непустой массив). Формат элементов icd10 гибкий: либо просто строка-код
+  // (легаси, как у ГБ/ХСН — код без расшифровки), либо {code, label} с описанием (ЯБ).
+  if (state.data.icd10 && state.data.icd10.length) {
+    const icdBtn = el('button', 'secondary-btn');
+    icdBtn.style.marginTop = '10px';
+    icdBtn.style.width = '100%';
+    icdBtn.innerHTML = state.answers.icdCode
+      ? `<i class="ti ti-pencil"></i>Код МКБ-10: ${state.answers.icdCode}`
+      : '<i class="ti ti-plus"></i>Добавить код МКБ';
+    icdBtn.onclick = () => { state.icdPageOpen = true; renderPage(); };
+    wrap.appendChild(icdBtn);
+  }
+
   return wrap;
+}
+
+// ---------- Экран выбора кода МКБ ----------
+// Отдельный "экран" поверх текущей wizard-страницы (не часть pages[]), потому что код
+// МКБ — не диагностический параметр самой нозологии, а техническая пометка для карты,
+// применимая к любой уже собранной строке. Наверху — собранный диагноз (без кода, чтобы
+// врач сверялся с клинической картиной), ниже — список кодов, клик по коду выбирает его
+// (повторный клик по уже выбранному — снимает выбор, т.к. код может не понадобиться).
+function renderIcdPage() {
+  root.innerHTML = '';
+
+  const header = el('div', 'header');
+  header.innerHTML = `<p class="eyebrow">${state.data.name}</p><h1>Код МКБ-10</h1>`;
+  root.appendChild(header);
+
+  const diagBox = el('div', 'result-box');
+  diagBox.textContent = assembleDiagnosis();
+  root.appendChild(diagBox);
+
+  const listLabel = el('p', 'group-label');
+  listLabel.textContent = 'Выбери код';
+  root.appendChild(listLabel);
+
+  const wrap = el('div', 'stack');
+  state.data.icd10.forEach(entry => {
+    const code = typeof entry === 'string' ? entry : entry.code;
+    const desc = typeof entry === 'string' ? null : entry.label;
+    const selected = state.answers.icdCode === code;
+    const card = el('div', 'card option' + (selected ? ' selected' : ''));
+    card.appendChild(renderRadioRow(code, null, desc, selected));
+    card.onclick = () => {
+      state.answers.icdCode = selected ? undefined : code;
+      renderPage();
+    };
+    wrap.appendChild(card);
+  });
+  root.appendChild(wrap);
+
+  const nav = el('div', 'nav-row');
+  const done = el('button', 'primary-btn');
+  done.textContent = 'Готово';
+  done.onclick = () => { state.icdPageOpen = false; renderPage(); };
+  nav.appendChild(done);
+  root.appendChild(nav);
 }
 
 // ---------- Навигация ----------
@@ -841,6 +1067,19 @@ function el(tag, className) {
   const e = document.createElement(tag);
   if (className) e.className = className;
   return e;
+}
+
+// Значения текстовых полей сохраняются в state на каждый oninput, но страница НЕ
+// перерисовывается на каждое нажатие (иначе поле теряет фокус посреди набора текста) —
+// из-за этого итоговая строка визуально не обновляется, пока не произойдёт какой-то
+// другой клик. По Enter — коммитим явно: перерисовываем, врач видит результат сразу.
+function commitOnEnter(input) {
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      renderPage();
+    }
+  });
 }
 
 // ---------- Инициализация ----------

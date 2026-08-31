@@ -14,5 +14,13 @@
     "ready": true,
     "section": "cardiology",
     "sectionName": "Кардиология"
+  },
+  {
+    "id": "peptic_ulcer",
+    "name": "Язвенная болезнь",
+    "file": "peptic_ulcer.json",
+    "ready": true,
+    "section": "gastroenterology",
+    "sectionName": "Гастроэнтерология"
   }
 ]
