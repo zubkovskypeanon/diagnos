@@ -30,5 +30,13 @@
     "ready": true,
     "section": "gastroenterology",
     "sectionName": "Гастроэнтерология"
+  },
+  {
+    "id": "ibs",
+    "name": "Синдром раздраженного кишечника",
+    "file": "ibs.json",
+    "ready": true,
+    "section": "gastroenterology",
+    "sectionName": "Гастроэнтерология"
   }
 ]

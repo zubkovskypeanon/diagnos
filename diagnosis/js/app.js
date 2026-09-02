@@ -262,7 +262,7 @@ function renderPageReference(pageId, ref) {
   const key = 'page-ref-' + pageId + '-' + ref.label + '-open';
   const isOpen = !!state[key];
   const btn = el('button', 'expand-toggle');
-  btn.textContent = (isOpen ? 'Скрыть ' : 'Показать ') + ref.label.toLowerCase();
+  btn.textContent = (isOpen ? 'Скрыть ' : 'Показать ') + lowerFirst(ref.label);
   btn.onclick = () => { state[key] = !isOpen; renderPage(); };
   wrap.appendChild(btn);
   if (!isOpen) return wrap;
@@ -476,7 +476,7 @@ function renderExpandable(opt, pageId) {
   const key = pageId + '-' + opt.id + '-open';
   const isOpen = !!state[key];
   const btn = el('button', 'expand-toggle');
-  btn.textContent = (isOpen ? 'Скрыть ' : 'Показать ') + opt.criteriaLabel.toLowerCase();
+  btn.textContent = (isOpen ? 'Скрыть ' : 'Показать ') + lowerFirst(opt.criteriaLabel);
   btn.onclick = (e) => {
     e.stopPropagation();
     state[key] = !isOpen;
@@ -886,13 +886,7 @@ function assembleDiagnosisSentence() {
         if (!f || !f.checked) return;
         findingsText.push(renderFindingTemplate(item, f));
       });
-      if (findingsText.length) {
-        // page.diagnosisPrefix — опционально, генерик: строка-заголовок перед сборкой находок этой
-        // конкретной multi-страницы (напр. "Осложнения: " у ГЭРБ). Не задан по умолчанию — не влияет
-        // на нозологии, где такой заголовок не нужен (ГБ, ЯБ и т.д.).
-        const prefix = page.diagnosisPrefix || '';
-        parts.push(prefix + findingsText.join('. ') + '.');
-      }
+      if (findingsText.length) parts.push(findingsText.join('. ') + '.');
     }
   });
 
@@ -1069,6 +1063,13 @@ function canProceed(page) {
 }
 
 // ---------- Утилита ----------
+// Приводим к нижнему регистру только первую букву подписи для кнопок
+// "Показать .../Скрыть ..." — full toLowerCase() ломает аббревиатуры и римские
+// цифры внутри подписи (напр. "Римские критерии IV" -> "римские критерии iv").
+function lowerFirst(str) {
+  return str.charAt(0).toLowerCase() + str.slice(1);
+}
+
 function el(tag, className) {
   const e = document.createElement(tag);
   if (className) e.className = className;
