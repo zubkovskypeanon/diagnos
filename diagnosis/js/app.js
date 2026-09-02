@@ -886,7 +886,13 @@ function assembleDiagnosisSentence() {
         if (!f || !f.checked) return;
         findingsText.push(renderFindingTemplate(item, f));
       });
-      if (findingsText.length) parts.push(findingsText.join('. ') + '.');
+      if (findingsText.length) {
+        // page.diagnosisPrefix — опционально, генерик: строка-заголовок перед сборкой находок этой
+        // конкретной multi-страницы (напр. "Осложнения: " у ГЭРБ). Не задан по умолчанию — не влияет
+        // на нозологии, где такой заголовок не нужен (ГБ, ЯБ и т.д.).
+        const prefix = page.diagnosisPrefix || '';
+        parts.push(prefix + findingsText.join('. ') + '.');
+      }
     }
   });
 

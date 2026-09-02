@@ -22,5 +22,13 @@
     "ready": true,
     "section": "gastroenterology",
     "sectionName": "Гастроэнтерология"
+  },
+  {
+    "id": "gerd",
+    "name": "Гастроэзофагеальная рефлюксная болезнь",
+    "file": "gerd.json",
+    "ready": true,
+    "section": "gastroenterology",
+    "sectionName": "Гастроэнтерология"
   }
 ]
