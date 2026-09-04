@@ -38,5 +38,13 @@
     "ready": true,
     "section": "gastroenterology",
     "sectionName": "Гастроэнтерология"
+  },
+  {
+    "id": "functional_dyspepsia",
+    "name": "Функциональная диспепсия",
+    "file": "functional_dyspepsia.json",
+    "ready": true,
+    "section": "gastroenterology",
+    "sectionName": "Гастроэнтерология"
   }
 ]
