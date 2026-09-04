@@ -16,6 +16,14 @@
     "sectionName": "Кардиология"
   },
   {
+    "id": "atrial_fibrillation",
+    "name": "Фибрилляция и трепетание предсердий",
+    "file": "atrial_fibrillation.json",
+    "ready": true,
+    "section": "cardiology",
+    "sectionName": "Кардиология"
+  },
+  {
     "id": "peptic_ulcer",
     "name": "Язвенная болезнь",
     "file": "peptic_ulcer.json",

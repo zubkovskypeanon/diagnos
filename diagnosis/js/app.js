@@ -417,6 +417,15 @@ function renderMulti(page) {
       card.appendChild(input);
     }
 
+    // "scorecalc" — чекбокс раскрывает калькулятор шкалы (сумма баллов по отмеченным
+    // факторам/выбранным градациям). Пока не отмечен — калькулятор не рендерится и его
+    // результат не участвует в сборке диагноза (см. renderFindingTemplate). Добавлено
+    // для ФП (CHA2DS2-VASc, HAS-BLED) — генерик, не завязан на конкретную нозологию,
+    // подходит для любой будущей шкалы с суммируемыми баллами.
+    if (answer.checked && item.kind === 'scorecalc') {
+      card.appendChild(renderScoreCalc(item, answer, page.id));
+    }
+
     wrap.appendChild(card);
   });
   return wrap;
@@ -493,6 +502,84 @@ function renderExpandable(opt, pageId) {
     wrap.appendChild(list);
   }
   return wrap;
+}
+
+// ---------- Калькулятор суммируемых шкал (generic: kind: "scorecalc" в multi-странице) ----------
+// Чекбокс пункта раскрывает набор факторов (item.factors): простые чекбоксы с
+// фиксированными баллами (points) либо взаимоисключающий select (type: "select",
+// options: [{value, label, points}]) — например возрастная градация в CHA2DS2-VASc.
+// Сумма баллов пересчитывается на каждый ре-рендер из отмеченных/выбранных факторов
+// и хранится в answer.score — renderFindingTemplate() подставляет её в item.template
+// через {score}/{scoreWord}. Пока чекбокс пункта не отмечен, калькулятор не рендерится
+// и answer.score не существует — в сборку диагноза попадает только то, что отмечено
+// (тот же принцип, что у остальных kind в multi). Добавлено для ФП (CHA2DS2-VASc,
+// HAS-BLED, Прил. Г1 КР), но не завязано на конкретную нозологию.
+function renderScoreCalc(item, answer, pageId) {
+  const wrap = el('div', 'scorecalc');
+  wrap.style.marginTop = '8px';
+  if (!answer.factors) answer.factors = {};
+
+  item.factors.forEach(f => {
+    if (f.type === 'select') {
+      if (!answer.factors[f.key]) answer.factors[f.key] = f.default;
+      const row = document.createElement('div');
+      row.style.marginTop = '6px';
+      const lbl = document.createElement('label');
+      lbl.textContent = f.label;
+      lbl.style.display = 'block';
+      lbl.style.fontSize = '12.5px';
+      lbl.style.color = 'var(--text-secondary)';
+      const sel = document.createElement('select');
+      f.options.forEach(o => {
+        const optEl = document.createElement('option');
+        optEl.value = o.value;
+        optEl.textContent = `${o.label} (+${o.points})`;
+        if (answer.factors[f.key] === o.value) optEl.selected = true;
+        sel.appendChild(optEl);
+      });
+      sel.onchange = () => { answer.factors[f.key] = sel.value; renderPage(); };
+      row.appendChild(lbl);
+      row.appendChild(sel);
+      wrap.appendChild(row);
+    } else {
+      const row = el('label', 'check-row');
+      row.style.marginTop = '6px';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = !!answer.factors[f.key];
+      box.onchange = () => { answer.factors[f.key] = box.checked; renderPage(); };
+      const span = el('span', null);
+      span.textContent = `${f.label} (+${f.points})`;
+      row.appendChild(box);
+      row.appendChild(span);
+      wrap.appendChild(row);
+    }
+  });
+
+  const score = computeScoreCalc(item, answer.factors);
+  answer.score = score;
+
+  const resultNote = el('div', 'note');
+  resultNote.style.marginTop = '8px';
+  const scoreWord = pluralRu(score, item.scoreWordForms || ['балл', 'балла', 'баллов']);
+  resultNote.innerHTML = `<i class="ti ti-report-analytics"></i><span><b>${item.label}: ${score} ${scoreWord}</b></span>`;
+  wrap.appendChild(resultNote);
+
+  return wrap;
+}
+
+function computeScoreCalc(item, factors) {
+  let sum = 0;
+  item.factors.forEach(f => {
+    if (f.type === 'select') {
+      const val = factors[f.key] || f.default;
+      const opt = f.options.find(o => o.value === val);
+      sum += opt ? opt.points : 0;
+    } else if (factors[f.key]) {
+      sum += f.points;
+    }
+  });
+  return sum;
 }
 
 function renderRiskTableToggle() {
@@ -940,6 +1027,12 @@ function renderFindingTemplate(item, f) {
   if (item.kind === 'freetext') {
     return item.template + (f.value ? item.freetextPrefix + f.value : '');
   }
+  if (item.kind === 'scorecalc') {
+    // f.score посчитан и сохранён в renderScoreCalc() на момент, пока чекбокс был отмечен
+    // и калькулятор рендерился — сюда попадает, только если f.checked (см. вызывающий код).
+    const scoreWord = pluralRu(f.score, item.scoreWordForms || ['балл', 'балла', 'баллов']);
+    return item.template.replace('{score}', f.score).replace('{scoreWord}', scoreWord);
+  }
   return item.template;
 }
 
@@ -1068,6 +1161,17 @@ function canProceed(page) {
 // цифры внутри подписи (напр. "Римские критерии IV" -> "римские критерии iv").
 function lowerFirst(str) {
   return str.charAt(0).toLowerCase() + str.slice(1);
+}
+
+// Согласование числительного с существительным для русских баллов/подобных слов
+// (1 балл, 2-4 балла, 5-20 баллов, 21 балл, 22 балла...). Генерик-хелпер, не завязан
+// на конкретную шкалу — используется в scorecalc (CHA2DS2-VASc, HAS-BLED), но подходит
+// для любой будущей шкалы с суммой баллов. forms = [один, два-четыре, пять+].
+function pluralRu(n, forms) {
+  const n10 = n % 10, n100 = n % 100;
+  if (n10 === 1 && n100 !== 11) return forms[0];
+  if (n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20)) return forms[1];
+  return forms[2];
 }
 
 function el(tag, className) {
