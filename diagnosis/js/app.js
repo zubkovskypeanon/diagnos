@@ -311,6 +311,7 @@ function renderPageReference(pageId, ref) {
 
   return wrap;
 }
+
 function renderSingleGrouped(page) {
   const wrap = el('div', 'stack');
   page.groups.forEach(group => {
@@ -959,6 +960,7 @@ function assembleDiagnosisSentence() {
 
   state.data.pages.forEach(page => {
     if (page.suppressDiagnosisIf && conditionMet(page.suppressDiagnosisIf)) return;
+    if (isPageSkipped(page)) return; // ФИКС: страница, скрытая через skipIf, не должна протаскивать протухший ответ, оставшийся в state.answers с прошлой ветки
     if (page.type === 'single') {
       const val = a[page.id === 'risk' ? 'risk' : page.id];
       const opt = page.options.find(o => o.id === val);
@@ -983,7 +985,7 @@ function assembleDiagnosisSentence() {
 // "Flowing"-стиль: одно предложение, фрагменты соединяются через page.joiner (по умолчанию
 // ", "), первый непустой фрагмент — без джойнера (он же начинает предложение с заглавной,
 // т.к. это headline-страница). Регистр остальных фрагментов НЕ трогаем программно — каждый
-// diagnosisText пишется в JSON сразу с нужной буквы (это надёжнее авто-lowerCase, который
+// diagnosisText пишется в JSON сразу с нужной буквой (это надёжнее авто-lowerCase, который
 // ломает аббревиатуры вроде "НПВП" при попадании в начало фрагмента).
 function assembleDiagnosisFlowing() {
   const a = state.answers;
@@ -991,6 +993,7 @@ function assembleDiagnosisFlowing() {
 
   state.data.pages.forEach(page => {
     if (page.suppressDiagnosisIf && conditionMet(page.suppressDiagnosisIf)) return;
+    if (isPageSkipped(page)) return; // ФИКС: страница, скрытая через skipIf, не должна протаскивать протухший ответ, оставшийся в state.answers с прошлой ветки
     const joiner = page.joiner !== undefined ? page.joiner : ', ';
     if (page.type === 'single') {
       const val = a[page.id];
