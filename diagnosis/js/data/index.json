@@ -62,5 +62,13 @@
     "ready": true,
     "section": "rheumatology",
     "sectionName": "Ревматология"
+  },
+  {
+    "id": "chronic_kidney_disease",
+    "name": "Хроническая болезнь почек",
+    "file": "chronic_kidney_disease.json",
+    "ready": true,
+    "section": "nephrology",
+    "sectionName": "Нефрология"
   }
 ]

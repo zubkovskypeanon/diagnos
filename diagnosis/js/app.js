@@ -187,6 +187,16 @@ function renderSingle(page) {
     wrap.appendChild(note);
   }
 
+  // Калькулятор СКФ по CKD-EPI 2009 (Приложение Г, п.7 КР "Хроническая болезнь почек"
+  // 2024) — легаси-механизм по образцу SCORE2 у ГБ (жёстко привязан к page.id, не
+  // завязан на generic-схему). Формула дана в КР только для пациентов европеоидной
+  // расы — коэффициента для других рас КР не приводит, поэтому калькулятор о расе не
+  // спрашивает и не применяет его. Только считает и подсказывает стадию — вариант
+  // ниже выбирает врач сам.
+  if (page.id === 'gfr_stage') {
+    wrap.appendChild(renderCkdEpiCalc());
+  }
+
   page.options.forEach(opt => {
     const id = opt.id;
     const selected = state.answers[page.id === 'risk' ? 'risk' : page.id] === id;
@@ -874,6 +884,120 @@ function categorizeScore2(value, age) {
   return 'очень высокий';
 }
 
+// ---------- Калькулятор СКФ по CKD-EPI 2009 (Приложение Г, п.7 КР "ХБП" 2024) ----------
+// Самодостаточный блок: собственное состояние в state.ckdEpi, НЕ пишет в state.answers
+// и не участвует в assembleDiagnosis() — только считает и подсказывает стадию, выбор
+// варианта в списке ниже остаётся за врачом (тот же принцип, что у SCORE2-блока выше).
+// Формула — четыре ветки по полу и порогу креатинина, как дано в самой КР (Приложение Г,
+// п.7): только для пациентов европеоидной расы, коэффициента для других рас КР не
+// приводит — калькулятор о расе не спрашивает и не применяет его.
+function renderCkdEpiCalc() {
+  if (!state.ckdEpi) {
+    state.ckdEpi = { sex: 'female', age: '', creatinine: '', result: null };
+  }
+  const c = state.ckdEpi;
+  const wrap = el('div', 'expand');
+  const isOpen = !!state['ckd-epi-open'];
+  const btn = el('button', 'expand-toggle');
+  btn.textContent = isOpen ? 'Скрыть калькулятор СКФ (CKD-EPI)' : 'Показать калькулятор СКФ (CKD-EPI)';
+  btn.onclick = () => { state['ckd-epi-open'] = !isOpen; renderPage(); };
+  wrap.appendChild(btn);
+  if (!isOpen) return wrap;
+
+  const note = el('div', 'note');
+  note.innerHTML = '<i class="ti ti-info-circle"></i><span>Формула CKD-EPI 2009 по креатинину крови (Приложение Г, п.7 КР) — в самой КР дана ' +
+    'только для пациентов европеоидной расы, коэффициента для других рас КР не приводит. Калькулятор только считает — вариант ' +
+    'стадии ниже выбирает врач.</span>';
+  wrap.appendChild(note);
+
+  const sexRow = el('div', 'inline-fields');
+  [['female', 'Женский'], ['male', 'Мужской']].forEach(([v, text]) => {
+    const label = el('label', 'check-row');
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'ckd-epi-sex';
+    radio.checked = c.sex === v;
+    radio.onchange = () => { c.sex = v; renderPage(); };
+    const span = el('span', null);
+    span.textContent = text;
+    label.appendChild(radio);
+    label.appendChild(span);
+    sexRow.appendChild(label);
+  });
+  wrap.appendChild(sexRow);
+
+  function numberField(labelText, key, placeholder) {
+    const row = document.createElement('div');
+    row.style.marginTop = '8px';
+    const lbl = document.createElement('label');
+    lbl.textContent = labelText;
+    lbl.style.display = 'block';
+    lbl.style.fontSize = '12.5px';
+    lbl.style.color = 'var(--text-secondary)';
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.placeholder = placeholder || '';
+    input.value = c[key];
+    input.style.width = '100%';
+    input.style.marginTop = '4px';
+    input.oninput = () => { c[key] = input.value; };
+    row.appendChild(lbl);
+    row.appendChild(input);
+    return row;
+  }
+
+  wrap.appendChild(numberField('Возраст, лет', 'age', 'напр. 60'));
+  wrap.appendChild(numberField('Креатинин крови, мкмоль/л', 'creatinine', 'напр. 90'));
+
+  const calcBtn = el('button', 'primary-btn');
+  calcBtn.style.marginTop = '10px';
+  calcBtn.textContent = 'Рассчитать';
+  calcBtn.onclick = () => {
+    const age = parseFloat(c.age);
+    const cr = parseFloat(c.creatinine);
+    if (!age || !cr) {
+      c.result = { error: 'Заполните возраст и креатинин.' };
+    } else {
+      const gfr = computeCkdEpiGfr(c.sex, age, cr);
+      c.result = { gfr, stage: gfrToStageLabel(gfr) };
+    }
+    renderPage();
+  };
+  wrap.appendChild(calcBtn);
+
+  if (c.result) {
+    const resBox = el('div', 'note');
+    if (c.result.error) {
+      resBox.innerHTML = `<i class="ti ti-alert-triangle"></i><span>${c.result.error}</span>`;
+    } else {
+      resBox.innerHTML = `<i class="ti ti-report-analytics"></i><span><b>рСКФ ≈ ${c.result.gfr.toFixed(1)} мл/мин/1,73 м²</b> → ${c.result.stage}</span>`;
+    }
+    wrap.appendChild(resBox);
+  }
+
+  return wrap;
+}
+
+// Чистая функция расчёта (Приложение Г, п.7 КР): 4 ветки по полу и порогу креатинина.
+function computeCkdEpiGfr(sex, age, creatinineUmol) {
+  const ratio = creatinineUmol / 88.4;
+  if (sex === 'female') {
+    const exp = creatinineUmol <= 62 ? -0.328 : -1.210;
+    return 144 * Math.pow(0.993, age) * Math.pow(ratio / 0.7, exp);
+  }
+  const exp = creatinineUmol <= 80 ? -0.412 : -1.210;
+  return 141 * Math.pow(0.993, age) * Math.pow(ratio / 0.9, exp);
+}
+
+function gfrToStageLabel(gfr) {
+  if (gfr > 90) return 'С1';
+  if (gfr >= 60) return 'С2';
+  if (gfr >= 45) return 'С3а';
+  if (gfr >= 30) return 'С3б';
+  if (gfr >= 15) return 'С4';
+  return 'С5';
+}
+
 // ---------- Модифицирующие факторы (Табл. П14/А3, стр. 185) ----------
 // Используются для разрешения "вилок" в таблице риска (ячейки без единственного
 // значения) и особенно значимы у пациентов категории умеренного риска (раздел 2.4 КР).
@@ -991,7 +1115,19 @@ function assembleDiagnosisFlowing() {
   const a = state.answers;
   const fragments = []; // { text, joiner }
 
-  state.data.pages.forEach(page => {
+  // page.assembleIndex (необязательный, генерик) — порядок сборки фрагментов независим
+  // от порядка страниц мастера (по умолчанию совпадает с ним, если поле нигде не задано,
+  // т.к. сортировка по исходному индексу — это исходный порядок). Добавлено для ХБП:
+  // страница "ЗПТ" должна идти ПОСЛЕДНЕЙ в навигации (в подавляющем большинстве случаев
+  // не заполняется вовсе — незачем заставлять врача каждый раз через неё щёлкать), но
+  // её фрагмент в итоговой строке — сразу после стадии, до альбуминурии, как в
+  // официальном примере КР ("ХБП С5Д (гемодиализ...)").
+  const orderedPages = state.data.pages
+    .map((page, idx) => ({ page, idx }))
+    .sort((x, y) => (x.page.assembleIndex ?? x.idx) - (y.page.assembleIndex ?? y.idx))
+    .map(x => x.page);
+
+  orderedPages.forEach(page => {
     if (page.suppressDiagnosisIf && conditionMet(page.suppressDiagnosisIf)) return;
     if (isPageSkipped(page)) return; // ФИКС: страница, скрытая через skipIf, не должна протаскивать протухший ответ, оставшийся в state.answers с прошлой ветки
     const joiner = page.joiner !== undefined ? page.joiner : ', ';
