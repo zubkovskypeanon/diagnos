@@ -70,5 +70,13 @@
     "ready": true,
     "section": "nephrology",
     "sectionName": "Нефрология"
+  },
+  {
+    "id": "obesity",
+    "name": "Ожирение",
+    "file": "obesity.json",
+    "ready": true,
+    "section": "endocrinology",
+    "sectionName": "Эндокринология"
   }
 ]
