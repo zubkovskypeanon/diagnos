@@ -1,4 +1,4 @@
-const CACHE_NAME = 'diagnosis-app-v21';
+const CACHE_NAME = 'diagnosis-app-v22';
 const APP_SHELL = [
   './',
   './index.html',
@@ -13,6 +13,7 @@ const APP_SHELL = [
   './js/data/gerd.json',
   './js/data/ibs.json',
   './js/data/functional_dyspepsia.json',
+  './js/data/cholelithiasis.json',
   './js/data/gout.json',
   './js/data/chronic_kidney_disease.json',
   './js/data/obesity.json',

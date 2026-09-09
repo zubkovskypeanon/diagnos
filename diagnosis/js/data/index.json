@@ -56,6 +56,14 @@
     "sectionName": "Гастроэнтерология"
   },
   {
+    "id": "cholelithiasis",
+    "name": "Желчнокаменная болезнь",
+    "file": "cholelithiasis.json",
+    "ready": true,
+    "section": "gastroenterology",
+    "sectionName": "Гастроэнтерология"
+  },
+  {
     "id": "gout",
     "name": "Подагра",
     "file": "gout.json",

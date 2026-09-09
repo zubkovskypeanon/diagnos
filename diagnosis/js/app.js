@@ -383,7 +383,13 @@ function renderMulti(page) {
       const sel = document.createElement('select');
       item.options.forEach(d => {
         const o = document.createElement('option');
-        o.value = d; o.textContent = d + ' степени';
+        // item.optionSuffix (опционально, generic) — суффикс, добавляемый к каждому варианту
+        // в выпадающем списке. По умолчанию " степени" (прежнее поведение, не ломаем уже
+        // выпущенные нозологии — Forrest у ЯБ, Фредриксен у ГБ и т.п., где суффикс не задан).
+        // Пусто ("") или другое слово — когда "степени" грамматически не подходит (напр.
+        // "обострение"/"ремиссия" у стадии хронического холецистита ЖКБ).
+        const optionSuffix = item.optionSuffix !== undefined ? item.optionSuffix : ' степени';
+        o.value = d; o.textContent = d + optionSuffix;
         if ((answer.degree || item.default) === d) o.selected = true;
         sel.appendChild(o);
       });
