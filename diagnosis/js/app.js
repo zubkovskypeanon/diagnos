@@ -271,7 +271,9 @@ function renderPageReference(pageId, ref) {
   const wrap = el('div', 'expand');
   const key = 'page-ref-' + pageId + '-' + ref.label + '-open';
   const isOpen = !!state[key];
-  const btn = el('button', 'expand-toggle');
+  // ref.highlight (опционально, generic) — визуально акцентирует именно эту кнопку
+  // (напр. вопросы ВВЭ у постгеморрагической анемии), не трогая остальные expand-toggle.
+  const btn = el('button', 'expand-toggle' + (ref.highlight ? ' expand-toggle-warning' : ''));
   btn.textContent = (isOpen ? 'Скрыть ' : 'Показать ') + lowerFirst(ref.label);
   btn.onclick = () => { state[key] = !isOpen; renderPage(); };
   wrap.appendChild(btn);

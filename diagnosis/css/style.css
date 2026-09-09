@@ -10,6 +10,7 @@
   --text-primary: #1E2428;
   --text-secondary: #5B6670;
   --text-muted: #8A939B;
+  --danger: #C0392B;
   --radius: 10px;
   --radius-lg: 14px;
 }
@@ -92,6 +93,7 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; }
   font-size: 12.5px; color: var(--accent); background: none; border: none; padding: 2px 0;
   cursor: pointer; text-decoration: underline;
 }
+.expand-toggle-warning { color: var(--danger); font-weight: 600; }
 .expand ul { margin: 8px 0 0; padding-left: 16px; }
 .expand li { font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; }
 

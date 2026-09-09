@@ -78,5 +78,13 @@
     "ready": true,
     "section": "endocrinology",
     "sectionName": "Эндокринология"
+  },
+  {
+    "id": "anemia",
+    "name": "Анемии",
+    "file": "anemia.json",
+    "ready": true,
+    "section": "hematology",
+    "sectionName": "Гематология"
   }
 ]
