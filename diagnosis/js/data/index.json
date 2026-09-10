@@ -94,5 +94,13 @@
     "ready": true,
     "section": "hematology",
     "sectionName": "Гематология"
+  },
+  {
+    "id": "pneumonia",
+    "name": "Внебольничная пневмония",
+    "file": "pneumonia.json",
+    "ready": true,
+    "section": "pulmonology",
+    "sectionName": "Пульмонология"
   }
 ]

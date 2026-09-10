@@ -247,6 +247,37 @@ function renderSingle(page) {
     wrap.appendChild(row);
   }
 
+  // page.scorecalc (генерик, добавлено для пневмонии) — калькулятор суммируемой шкалы
+  // на single-странице, независимый от того, какая опция выбрана (напр. SMART-COP/
+  // SMRT-CO на странице "Тяжесть" — не альтернатива нетяжелой/тяжелой, а опциональное
+  // дополнение к любой из них). По чекбоксу разворачивается тот же UI, что и у kind:
+  // "scorecalc" в multi (переиспользуем renderScoreCalc() без дублирования логики).
+  // Результат подставляется в diagnosisText выбранной опции через токен {key} —
+  // см. buildSingleFragmentText().
+  if (page.scorecalc) {
+    const scKey = page.id + '__' + (page.scorecalc.key || 'scorecalc');
+    if (!state.answers[scKey]) state.answers[scKey] = { checked: false, factors: {} };
+    const scAnswer = state.answers[scKey];
+    const scCard = el('div', 'card');
+    const scLabelRow = el('label', 'check-row');
+    const scBox = document.createElement('input');
+    scBox.type = 'checkbox';
+    scBox.checked = scAnswer.checked;
+    scBox.onchange = () => { scAnswer.checked = scBox.checked; renderPage(); };
+    const scSpan = el('span', null);
+    scSpan.textContent = page.scorecalc.label;
+    scLabelRow.appendChild(scBox);
+    scLabelRow.appendChild(scSpan);
+    scCard.appendChild(scLabelRow);
+    if (page.scorecalc.criteria) {
+      scCard.appendChild(renderExpandable(page.scorecalc, page.id));
+    }
+    if (scAnswer.checked) {
+      scCard.appendChild(renderScoreCalc(page.scorecalc, scAnswer, page.id));
+    }
+    wrap.appendChild(scCard);
+  }
+
   if (page.references) {
     page.references.forEach(ref => wrap.appendChild(renderPageReference(page.id, ref)));
   }
@@ -434,6 +465,34 @@ function renderMulti(page) {
       input.oninput = () => { answer.value = input.value; state.answers.findings[item.id] = answer; };
       commitOnEnter(input);
       card.appendChild(input);
+    }
+
+    // "lobe" (добавлено для пневмонии — выбор долей/сегментов лёгкого) — чекбоксы
+    // сегментов рендерятся ВСЕГДА, а не только при отмеченной "вся доля" (answer.checked):
+    // врач должен иметь возможность выбрать конкретные сегменты напрямую, без
+    // обязательной предварительной отметки доли целиком. Приоритет между "вся доля" и
+    // сегментами разрешается в renderFindingTemplate() при сборке текста.
+    if (item.kind === 'lobe') {
+      if (!answer.segments) answer.segments = {};
+      const segWrap = el('div', 'inline-fields');
+      segWrap.style.flexWrap = 'wrap';
+      (item.segments || []).forEach(seg => {
+        const segLabel = el('label', 'check-row');
+        const segBox = document.createElement('input');
+        segBox.type = 'checkbox';
+        segBox.checked = !!answer.segments[seg.id];
+        segBox.onchange = () => {
+          answer.segments[seg.id] = segBox.checked;
+          state.answers.findings[item.id] = answer;
+          renderPage();
+        };
+        const segSpan = el('span', null);
+        segSpan.textContent = seg.label;
+        segLabel.appendChild(segBox);
+        segLabel.appendChild(segSpan);
+        segWrap.appendChild(segLabel);
+      });
+      card.appendChild(segWrap);
     }
 
     // "scorecalc" — чекбокс раскрывает калькулятор шкалы (сумма баллов по отмеченным
@@ -1078,6 +1137,21 @@ function buildSingleFragmentText(page, opt) {
     const formatted = raw ? '(' + raw + (ff.unit ? ' ' + ff.unit : '') + ')' : '';
     text = text.replace('{' + ff.key + '}', formatted);
   }
+  if (page.scorecalc) {
+    // Результат page-level scorecalc (напр. "(SMRT-CO - 4)") подставляется через токен
+    // {key} только если чекбокс отмечен и счёт посчитан — иначе токен заменяется на
+    // пустую строку (шкала опциональна, как и у kind: "scorecalc" в multi).
+    const scKey = page.id + '__' + (page.scorecalc.key || 'scorecalc');
+    const scAnswer = state.answers[scKey];
+    let scText = '';
+    if (scAnswer && scAnswer.checked && scAnswer.score !== undefined) {
+      const scoreWord = pluralRu(scAnswer.score, page.scorecalc.scoreWordForms || ['балл', 'балла', 'баллов']);
+      scText = page.scorecalc.resultTemplate
+        .replace('{score}', scAnswer.score)
+        .replace('{scoreWord}', scoreWord);
+    }
+    text = text.replace('{' + (page.scorecalc.key || 'scorecalc') + '}', scText);
+  }
   if (opt.freetextField) {
     const ff = opt.freetextField;
     const raw = state.answers[page.id + '-' + opt.id + '__' + ff.key] || '';
@@ -1104,14 +1178,32 @@ function assembleDiagnosisSentence() {
       const findingsText = [];
       page.items.forEach(item => {
         const f = a.findings && a.findings[item.id];
-        if (!f || !f.checked) return;
+        if (!findingHasContent(item, f)) return;
         findingsText.push(renderFindingTemplate(item, f));
       });
-      if (findingsText.length) parts.push(findingsText.join('. ') + '.');
+      // page.diagnosisPrefix (генерик) — префикс, добавляемый один раз перед всей
+      // склеенной группой находок этой страницы (напр. "Осложнения: "), а не перед
+      // каждым отдельным пунктом. Используется у ГЭРБ.
+      if (findingsText.length) parts.push((page.diagnosisPrefix || '') + findingsText.join('. ') + '.');
     }
   });
 
   return parts.join(' ');
+}
+
+// Определяет, вносит ли конкретный отмеченный/заполненный пункт multi-страницы вклад
+// в итоговую строку. Для всех обычных kind это просто f.checked (как было раньше).
+// Для kind: "lobe" (добавлено для пневмонии — выбор долей/сегментов лёгкого) пункт
+// может быть "включён" двумя независимыми путями: чекбоксом "вся доля" (f.checked)
+// ИЛИ отметкой хотя бы одного сегмента внутри неё (f.segments), даже если сам чекбокс
+// доли не отмечен — врач должен иметь возможность выбрать сегменты напрямую, без
+// обязательной отметки "вся доля" сначала.
+function findingHasContent(item, f) {
+  if (!f) return false;
+  if (item && item.kind === 'lobe') {
+    return !!f.checked || !!(f.segments && Object.keys(f.segments).some(k => f.segments[k]));
+  }
+  return !!f.checked;
 }
 
 // "Flowing"-стиль: одно предложение, фрагменты соединяются через page.joiner (по умолчанию
@@ -1121,43 +1213,71 @@ function assembleDiagnosisSentence() {
 // ломает аббревиатуры вроде "НПВП" при попадании в начало фрагмента).
 function assembleDiagnosisFlowing() {
   const a = state.answers;
-  const fragments = []; // { text, joiner }
 
-  // page.assembleIndex (необязательный, генерик) — порядок сборки фрагментов независим
-  // от порядка страниц мастера (по умолчанию совпадает с ним, если поле нигде не задано,
-  // т.к. сортировка по исходному индексу — это исходный порядок). Добавлено для ХБП:
-  // страница "ЗПТ" должна идти ПОСЛЕДНЕЙ в навигации (в подавляющем большинстве случаев
-  // не заполняется вовсе — незачем заставлять врача каждый раз через неё щёлкать), но
-  // её фрагмент в итоговой строке — сразу после стадии, до альбуминурии, как в
-  // официальном примере КР ("ХБП С5Д (гемодиализ...)").
-  const orderedPages = state.data.pages
-    .map((page, idx) => ({ page, idx }))
-    .sort((x, y) => (x.page.assembleIndex ?? x.idx) - (y.page.assembleIndex ?? y.idx))
-    .map(x => x.page);
-
-  orderedPages.forEach(page => {
+  // Плоский список "юнитов сборки" — по одному на single/single_grouped страницу и по
+  // одному на КАЖДЫЙ отмеченный пункт multi-страницы (а не один на всю страницу целиком).
+  // Каждый юнит по умолчанию наследует позицию (key) и joiner своей страницы — это
+  // в точности прежнее поведение (page.assembleIndex, добавлено для ХБП: страница "ЗПТ"
+  // идёт последней в навигации, но в строке — сразу после стадии).
+  //
+  // Расширено для пневмонии: у отдельного пункта multi-страницы может быть СВОЯ позиция
+  // (item.assembleIndex) и/или свой joiner (item.joiner), независимо от остальных пунктов
+  // той же страницы. Нужно, когда пункты одного блока "Осложнения" физически расходятся
+  // по разным местам итоговой строки — например, возбудитель должен идти сразу после
+  // локализации (до тяжести) и отделяться запятой, тогда как обычные осложнения после
+  // тяжести отделяются точкой (см. примеры Указаний по ВПТ). Ни assembleIndex, ни joiner
+  // не заданы ни у одного пункта уже выпущенных нозологий — их поведение не меняется.
+  const units = [];
+  state.data.pages.forEach((page, pageIdx) => {
     if (page.suppressDiagnosisIf && conditionMet(page.suppressDiagnosisIf)) return;
     if (isPageSkipped(page)) return; // ФИКС: страница, скрытая через skipIf, не должна протаскивать протухший ответ, оставшийся в state.answers с прошлой ветки
-    const joiner = page.joiner !== undefined ? page.joiner : ', ';
+    const pageKey = page.assembleIndex ?? pageIdx;
+    const pageJoiner = page.joiner !== undefined ? page.joiner : ', ';
+
     if (page.type === 'single') {
       const val = a[page.id];
       const opt = page.options.find(o => o.id === val);
       const text = buildSingleFragmentText(page, opt);
-      if (text) fragments.push({ text, joiner });
+      if (text) units.push({ key: pageKey, seq: units.length, text, joiner: pageJoiner });
     } else if (page.type === 'single_grouped') {
-      if (a.degreeStatus && a.degreeStatus.diagnosisText) fragments.push({ text: a.degreeStatus.diagnosisText, joiner });
+      if (a.degreeStatus && a.degreeStatus.diagnosisText) {
+        units.push({ key: pageKey, seq: units.length, text: a.degreeStatus.diagnosisText, joiner: pageJoiner });
+      }
     } else if (page.type === 'multi') {
+      // page.diagnosisPrefix — добавляется один раз, к первому отмеченному пункту ЭТОЙ
+      // страницы в исходном порядке items (независимо от того, куда потом встанет его
+      // юнит после сортировки по key), как и раньше.
+      //
+      // page.firstItemJoiner (опционально, генерик, добавлено для пневмонии) — джойнер,
+      // которым ПЕРВЫЙ отмеченный пункт этой страницы присоединяется к предыдущему
+      // фрагменту, если отличается от джойнера МЕЖДУ несколькими пунктами этой же
+      // страницы (page.joiner). Пример — «Локализация»: «...пневмония с локализацией
+      // в нижней доле...» (без запятой перед группой), но «...нижней доле, верхней
+      // доле...» (с запятой между несколькими выбранными долями). Если не задан —
+      // прежнее поведение (везде один и тот же page.joiner), ничего не меняется у уже
+      // выпущенных нозологий.
+      let firstOnThisPage = true;
       page.items.forEach(item => {
         const f = a.findings && a.findings[item.id];
-        if (!f || !f.checked) return;
-        fragments.push({ text: renderFindingTemplate(item, f), joiner });
+        if (!findingHasContent(item, f)) return;
+        let text = renderFindingTemplate(item, f);
+        if (firstOnThisPage && page.diagnosisPrefix) text = page.diagnosisPrefix + text;
+        const defaultJoiner = (firstOnThisPage && page.firstItemJoiner !== undefined) ? page.firstItemJoiner : pageJoiner;
+        firstOnThisPage = false;
+        const itemKey = item.assembleIndex !== undefined ? item.assembleIndex : pageKey;
+        const itemJoiner = item.joiner !== undefined ? item.joiner : defaultJoiner;
+        units.push({ key: itemKey, seq: units.length, text, joiner: itemJoiner });
       });
     }
   });
 
+  // Сортировка по key; при равенстве — стабильно по исходному порядку (seq), чтобы
+  // юниты без явного assembleIndex/item.assembleIndex шли ровно как раньше.
+  units.sort((x, y) => (x.key - y.key) || (x.seq - y.seq));
+
   let result = '';
-  fragments.forEach((frag, i) => {
-    result += (i === 0 ? frag.text : frag.joiner + frag.text);
+  units.forEach((u, i) => {
+    result += (i === 0 ? u.text : u.joiner + u.text);
   });
   return result ? result.trim() + '.' : '';
 }
@@ -1179,6 +1299,18 @@ function renderFindingTemplate(item, f) {
     // и калькулятор рендерился — сюда попадает, только если f.checked (см. вызывающий код).
     const scoreWord = pluralRu(f.score, item.scoreWordForms || ['балл', 'балла', 'баллов']);
     return item.template.replace('{score}', f.score).replace('{scoreWord}', scoreWord);
+  }
+  if (item.kind === 'lobe') {
+    // "Вся доля" (f.checked) имеет приоритет над отдельными отмеченными сегментами —
+    // если оба почему-то отмечены одновременно, в строку идёт только целая доля,
+    // без противоречивого дублирования "...доле... сегментах...".
+    if (f.checked) return item.wholeTemplate;
+    const checkedSegs = (item.segments || []).filter(seg => f.segments && f.segments[seg.id]);
+    if (checkedSegs.length) {
+      const segList = checkedSegs.map(seg => seg.id.toUpperCase()).join(', ');
+      return item.segmentsTemplate.replace('{segments}', segList);
+    }
+    return '';
   }
   return item.template;
 }
