@@ -110,5 +110,13 @@
     "ready": true,
     "section": "pulmonology",
     "sectionName": "Пульмонология"
+  },
+  {
+    "id": "asthma",
+    "name": "Бронхиальная астма",
+    "file": "asthma.json",
+    "ready": true,
+    "section": "pulmonology",
+    "sectionName": "Пульмонология"
   }
 ]

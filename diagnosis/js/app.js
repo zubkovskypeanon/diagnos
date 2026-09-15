@@ -348,7 +348,7 @@ function renderPageReference(pageId, ref) {
     const list = document.createElement('ul');
     ref.criteria.forEach(text => {
       const li = document.createElement('li');
-      li.textContent = text;
+      setListItemText(li, text);
       list.appendChild(li);
     });
     wrap.appendChild(list);
@@ -631,12 +631,25 @@ function renderExpandable(opt, pageId) {
     const list = document.createElement('ul');
     opt.criteria.forEach(c => {
       const li = document.createElement('li');
-      li.textContent = c;
+      setListItemText(li, c);
       list.appendChild(li);
     });
     wrap.appendChild(list);
   }
   return wrap;
+}
+
+// Формат элемента opt.criteria/ref.criteria — гибкий (добавлено при работе над Бронхиальной
+// астмой): обычная строка -> li.textContent (прежнее поведение, без изменений для всех уже
+// выпущенных нозологий — ни одна не использует объектный формат); объект {html: "..."} ->
+// li.innerHTML, точечный опт-ин для форматирования (напр. <b>жирный</b>) внутри конкретной
+// строки подсказки. Не переключаем весь список на innerHTML огулом: часть существующих
+// критериев (напр. пороговые значения "ПСВ <33%", "PaO2 <60") содержат "<"/">" как обычные
+// символы сравнения — при innerHTML браузер принял бы их за начало тега и обрезал текст.
+// Такие строки остаются обычными строками и продолжают идти через textContent.
+function setListItemText(li, entry) {
+  if (entry && typeof entry === 'object' && entry.html !== undefined) li.innerHTML = entry.html;
+  else li.textContent = entry;
 }
 
 // ---------- Калькулятор суммируемых шкал (generic: kind: "scorecalc" в multi-странице) ----------
