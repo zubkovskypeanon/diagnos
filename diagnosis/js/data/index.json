@@ -24,6 +24,14 @@
     "sectionName": "Кардиология"
   },
   {
+    "id": "coronary_artery_disease",
+    "name": "ИБС",
+    "file": "coronary_artery_disease.json",
+    "ready": true,
+    "section": "cardiology",
+    "sectionName": "Кардиология"
+  },
+  {
     "id": "peptic_ulcer",
     "name": "Язвенная болезнь",
     "file": "peptic_ulcer.json",

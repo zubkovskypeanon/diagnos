@@ -114,6 +114,8 @@ function renderPage() {
     root.appendChild(renderSingleGrouped(page));
   } else if (page.type === 'multi') {
     root.appendChild(renderMulti(page));
+  } else if (page.type === 'compound') {
+    root.appendChild(renderCompoundPage(page));
   }
 
   // Результат показываем на последней СТРАНИЦЕ С УЧЁТОМ skipIf, а не по типу страницы —
@@ -446,7 +448,7 @@ function renderMulti(page) {
         }
         const sel = document.createElement('select');
         fld.options.forEach(v => {
-          const o = document.createElement('option'); o.value = v; o.textContent = v;
+          const o = document.createElement('option'); o.value = v; o.textContent = v || '(не указан)';
           if ((answer[fld.key] || fld.default) === v) o.selected = true;
           sel.appendChild(o);
         });
@@ -506,6 +508,61 @@ function renderMulti(page) {
 
     wrap.appendChild(card);
   });
+  return wrap;
+}
+
+// page.type === 'compound' (добавлено для ИБС — изолированный постинфарктный кардиосклероз)
+// — страница чистого ввода полей (freetext/select), БЕЗ радио-выбора и БЕЗ чекбокса-гейта
+// поверх, в отличие от kind: "compound" внутри multi (там поля появляются только после
+// отметки чекбокса пункта). Нужна, когда странице нечего "выбирать" — только заполнить
+// атрибуты уже выбранной на предыдущей странице формы (дата/локализация/тип ИМ). Значения
+// живут в state.answers[page.id] (объект по ключам полей), а не в state.answers.findings —
+// это не multi-пункт. Поля начинают собираться в строку, только когда заполнено хотя бы
+// одно (см. buildCompoundPageText) — пустая страница не оставляет в диагнозе пустых скобок.
+function renderCompoundPage(page) {
+  const wrap = el('div', 'stack');
+
+  if (page.note) {
+    const staticNote = el('div', 'note');
+    staticNote.innerHTML = `<i class="ti ti-info-circle"></i><span>${page.note}</span>`;
+    wrap.appendChild(staticNote);
+  }
+
+  if (!state.answers[page.id]) state.answers[page.id] = {};
+  const values = state.answers[page.id];
+  const card = el('div', 'card');
+  card.style.cursor = 'default';
+  const row = el('div', 'inline-fields');
+  page.fields.forEach(fld => {
+    if (fld.type === 'freetext') {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = fld.placeholder || '';
+      input.value = values[fld.key] || '';
+      input.oninput = () => { values[fld.key] = input.value; };
+      commitOnEnter(input);
+      row.appendChild(input);
+      return;
+    }
+    const sel = document.createElement('select');
+    fld.options.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = v || '(не указан)';
+      if ((values[fld.key] || fld.default) === v) o.selected = true;
+      sel.appendChild(o);
+    });
+    if (values[fld.key] === undefined) values[fld.key] = fld.default;
+    sel.onchange = () => { values[fld.key] = sel.value; renderPage(); };
+    row.appendChild(sel);
+  });
+  card.appendChild(row);
+  wrap.appendChild(card);
+
+  if (page.references) {
+    page.references.forEach(ref => wrap.appendChild(renderPageReference(page.id, ref)));
+  }
+
   return wrap;
 }
 
@@ -1160,6 +1217,23 @@ function buildSingleFragmentText(page, opt) {
   return text.trim();
 }
 
+// Текст page.type === 'compound' страницы (добавлено для ИБС) — та же подстановка
+// {key} + fld.prefix, что и в renderFindingTemplate() для kind: "compound" внутри multi,
+// но здесь источник значений — state.answers[page.id], а не answer конкретного пункта.
+// Возвращает '', если НИ ОДНО поле не заполнено — иначе в строку попали бы пустые скобки
+// на странице, которую врач осознанно пропустил не заполняя (все поля необязательны).
+function buildCompoundPageText(page) {
+  const values = state.answers[page.id] || {};
+  const hasAny = page.fields.some(fld => values[fld.key]);
+  if (!hasAny) return '';
+  let t = page.template;
+  page.fields.forEach(fld => {
+    const raw = values[fld.key] || fld.default || '';
+    t = t.replace('{' + fld.key + '}', raw ? (fld.prefix || '') + raw : '');
+  });
+  return t;
+}
+
 function assembleDiagnosisSentence() {
   const a = state.answers;
   const parts = [];
@@ -1185,6 +1259,9 @@ function assembleDiagnosisSentence() {
       // склеенной группой находок этой страницы (напр. "Осложнения: "), а не перед
       // каждым отдельным пунктом. Используется у ГЭРБ.
       if (findingsText.length) parts.push((page.diagnosisPrefix || '') + findingsText.join('. ') + '.');
+    } else if (page.type === 'compound') {
+      const text = buildCompoundPageText(page);
+      if (text) parts.push(text);
     }
   });
 
@@ -1268,6 +1345,9 @@ function assembleDiagnosisFlowing() {
         const itemJoiner = item.joiner !== undefined ? item.joiner : defaultJoiner;
         units.push({ key: itemKey, seq: units.length, text, joiner: itemJoiner });
       });
+    } else if (page.type === 'compound') {
+      const text = buildCompoundPageText(page);
+      if (text) units.push({ key: pageKey, seq: units.length, text, joiner: pageJoiner });
     }
   });
 
@@ -1285,7 +1365,17 @@ function assembleDiagnosisFlowing() {
 function renderFindingTemplate(item, f) {
   if (item.kind === 'compound') {
     let t = item.template;
-    item.fields.forEach(fld => { t = t.replace('{' + fld.key + '}', f[fld.key] || fld.default || ''); });
+    // fld.prefix (опционально, добавлено для ИБС) — подставляется перед значением поля,
+    // только если оно непустое; отсутствует у поля -> прежнее поведение (пустая строка),
+    // ничего не меняется у уже выпущенных compound-пунктов (ХБП у ГБ, стеноз у ЯБ), т.к.
+    // там fld.prefix нигде не задан. Нужно, когда часть полей необязательна (дата/локализация/
+    // тип ИМ у постинфарктного кардиосклероза) и без условного разделителя пустое поле
+    // склеивало бы соседние значения без пробела/запятой.
+    item.fields.forEach(fld => {
+      const raw = f[fld.key] || fld.default || '';
+      const val = raw ? (fld.prefix || '') + raw : '';
+      t = t.replace('{' + fld.key + '}', val);
+    });
     return t;
   }
   if (item.kind === 'degree') {
