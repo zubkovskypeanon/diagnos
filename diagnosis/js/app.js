@@ -4,7 +4,11 @@ const state = {
   data: null,
   pageIndex: -1, // -1 = экран выбора нозологии
   answers: {},
-  icdPageOpen: false // отдельный экран выбора кода МКБ, поверх текущей pageIndex-страницы
+  icdPageOpen: false, // отдельный экран выбора кода МКБ, поверх текущей pageIndex-страницы
+  // Экран передачи опросника пациенту (generic, добавлено для ХОБЛ, см. renderPatientHandoffPage) —
+  // тот же паттерн отдельного экрана поверх pageIndex, что и icdPageOpen. null, когда закрыт;
+  // {pageId, scaleType} — какую шкалу на какой странице сейчас проходит пациент.
+  patientHandoffOpen: null
 };
 
 const root = document.getElementById('app');
@@ -93,12 +97,14 @@ async function openNosology(item) {
   state.pageIndex = 0;
   state.answers = {};
   state.icdPageOpen = false;
+  state.patientHandoffOpen = null;
   renderPage();
 }
 
 // ---------- Рендер: страница мастера ----------
 function renderPage() {
   if (state.icdPageOpen) { renderIcdPage(); return; }
+  if (state.patientHandoffOpen) { renderPatientHandoffPage(); return; }
   const page = state.data.pages[state.pageIndex];
   root.innerHTML = '';
 
@@ -116,6 +122,8 @@ function renderPage() {
     root.appendChild(renderMulti(page));
   } else if (page.type === 'compound') {
     root.appendChild(renderCompoundPage(page));
+  } else if (page.type === 'scoredAssessment') {
+    root.appendChild(renderScoredAssessment(page));
   }
 
   // Результат показываем на последней СТРАНИЦЕ С УЧЁТОМ skipIf, а не по типу страницы —
@@ -138,6 +146,9 @@ function renderBreadcrumbs() {
       if (opt) label = opt.label;
     } else if (page.type === 'single_grouped') {
       if (state.answers.degreeStatus) label = state.answers.degreeStatus.label;
+    } else if (page.type === 'scoredAssessment') {
+      const group = deriveScoredAssessmentGroup(page);
+      if (group) label = 'Группа ' + group.letter;
     }
     if (label) {
       const chip = el('span', 'chip');
@@ -431,6 +442,36 @@ function renderMulti(page) {
       card.appendChild(sel);
     }
 
+    // item.patientScale (generic, добавлено для ХОБЛ — ВАШ Борга на пункте "С обострением")
+    // — та же механика, что catScale/mmrcScale на scoredAssessment-странице (см. выше), но
+    // висит на ОТДЕЛЬНОМ ПУНКТЕ multi-страницы, а не на самой странице: рендерится внутри
+    // карточки пункта, только пока он отмечен, независимо от item.kind — практически
+    // используется рядом с kind:"degree", но по смыслу не альтернатива ему, а отдельный,
+    // необязательный источник данных (врач сам решает степень тяжести обострения по всем 5
+    // критериям Рис.2 КР, ВАШ Борга — только один из них, сюда автоматически не пишется).
+    // По решению врача для ВАШ Борга (в отличие от CAT/mMRC на "Группе") нет собственного
+    // тап-выбора врачом вообще — только подпись серым (psScale.label) + кнопка передачи
+    // пациенту; после ответа значение просто дописывается отдельной строкой под кнопкой.
+    if (answer.checked && item.patientScale) {
+      const psScale = item.patientScale;
+      const psWrap = document.createElement('div');
+      psWrap.style.marginTop = '10px';
+      const psCaption = el('p', 'group-label');
+      psCaption.style.margin = '0 0 4px';
+      psCaption.textContent = psScale.label;
+      psWrap.appendChild(psCaption);
+      if (psScale.patientHandoff) {
+        psWrap.appendChild(renderPatientHandoffButton({ pageId: page.id, itemId: item.id, scaleField: 'patientScale' }, psScale.label));
+      }
+      if (answer[psScale.key] !== undefined) {
+        const psResult = el('p', 'option-hint');
+        psResult.style.marginTop = '6px';
+        psResult.textContent = 'Ответ пациента: ' + answer[psScale.key] + ' баллов';
+        psWrap.appendChild(psResult);
+      }
+      card.appendChild(psWrap);
+    }
+
     if (answer.checked && item.kind === 'compound') {
       const row = el('div', 'inline-fields');
       item.fields.forEach(fld => {
@@ -508,6 +549,17 @@ function renderMulti(page) {
 
     wrap.appendChild(card);
   });
+
+  // page.references на multi-странице (генерик, добавлено для ХОБЛ — подсказка по ВАШ Борга
+  // на странице «Обострение») — тот же механизм и та же функция renderPageReference(), что
+  // уже используется на single/compound/scoredAssessment страницах (см. соответствующие
+  // разделы), сюда до сих пор не была подключена просто потому, что ни одной multi-странице
+  // это не требовалось. Рендерится один раз после всех пунктов, а не внутри item.criteria —
+  // это отдельный блок практической информации, не критерии конкретного пункта чекбокс-списка.
+  if (page.references) {
+    page.references.forEach(ref => wrap.appendChild(renderPageReference(page.id, ref)));
+  }
+
   return wrap;
 }
 
@@ -564,6 +616,378 @@ function renderCompoundPage(page) {
   }
 
   return wrap;
+}
+
+// page.type === 'scoredAssessment' (добавлено для ХОБЛ — группа A/B/E по CAT+mMRC+частоте
+// обострений, Рис. 1 КР "ХОБЛ" 2024, GOLD 2023). Комбинирует на одной странице суммируемую
+// 8-доменную шкалу (page.catScale, 0-40 баллов), одиночный select (page.mmrcScale, 0-4) и
+// раздельный ввод частоты/госпитализации обострений (page.frequency) — и сам вычисляет
+// производную 3-категорийную группу. В отличие от page.scorecalc (необязательная надстройка
+// НАД уже сделанным выбором) здесь сама группа — это и есть результат страницы, поэтому
+// вычисляется без ручного переопределения (по прямому решению врача: правило по Рис.1
+// безвилочное). Правило вывода (см. deriveScoredAssessmentGroup) — фиксированный алгоритм
+// именно этого типа страницы, не универсальный конструктор правил: для не-ABE-образной
+// шкалы в будущем эту функцию придётся расширять, а не только JSON.
+// Карточки одиночного выбора для шкалы вида {value, hint?} — общий рендер для mMRC и любой
+// будущей/добавленной шкалы такого же вида (напр. ВАШ Борга у ХОБЛ). Число — всегда жирным
+// заголовком (а не описание) — важно для шкал, где не у каждого уровня своя формулировка.
+//
+// Группировка (добавлено для ВАШ Борга, generic) — источник может давать ОДНУ подпись сразу
+// на НЕСКОЛЬКО соседних чисел (напр. у Борга по oxy2.ru: 4-5 — «одышка выражена сильно, но
+// терпеть можно», 6-7-8 — «одышка выражена сильно»), а не по подписи на каждое число отдельно
+// — по решению врача. Определяется по данным, а не отдельным флагом в JSON: подряд идущие
+// пункты с ОДИНАКОВЫМ непустым hint схлопываются в один блок с ОДНОЙ подписью и рядом мелких
+// кликабельных чисел внутри (переиспользует стиль `.num-scale-item`, но с шириной по
+// содержимому — не растягивается на всю строку, как у 6-элементного ряда CAT). Пациент
+// внутри группы всё равно выбирает конкретное число сам — группировка только про подпись,
+// не про сокращение число вариантов. Пункты с уникальным или отсутствующим hint — как раньше,
+// отдельная карточка на каждый (у mMRC подписи всегда уникальны, так что для неё это ничего
+// не меняет визуально).
+function renderScaleOptionCards(options, currentValue, onSelect) {
+  const stack = el('div', 'stack');
+  let i = 0;
+  while (i < options.length) {
+    const hint = options[i].hint;
+    let j = i + 1;
+    if (hint) {
+      while (j < options.length && options[j].hint === hint) j++;
+    }
+    const group = options.slice(i, j);
+    if (group.length > 1) {
+      const card = el('div', 'card');
+      card.style.cursor = 'default';
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.gap = '6px';
+      group.forEach(opt => {
+        const selected = currentValue === opt.value;
+        const item = el('div', 'num-scale-item' + (selected ? ' selected' : ''));
+        item.style.flex = 'none';
+        item.style.width = '44px';
+        item.textContent = opt.value;
+        item.onclick = () => onSelect(opt.value);
+        row.appendChild(item);
+      });
+      card.appendChild(row);
+      const hintP = el('p', 'option-hint');
+      hintP.style.marginTop = '8px';
+      hintP.textContent = hint;
+      card.appendChild(hintP);
+      stack.appendChild(card);
+    } else {
+      const opt = options[i];
+      const selected = currentValue === opt.value;
+      const card = el('div', 'card option' + (selected ? ' selected' : ''));
+      card.appendChild(renderRadioRow(String(opt.value), null, opt.hint, selected));
+      card.onclick = () => onSelect(opt.value);
+      stack.appendChild(card);
+    }
+    i = j;
+  }
+  return stack;
+}
+
+function renderScoredAssessment(page) {
+  const wrap = el('div', 'stack');
+  if (!state.answers[page.id]) {
+    state.answers[page.id] = { cat: {}, catScore: undefined, mmrc: undefined, freqCount: undefined, hospitalization: false };
+  }
+  const a = state.answers[page.id];
+
+  if (page.note) {
+    const staticNote = el('div', 'note');
+    staticNote.innerHTML = `<i class="ti ti-info-circle"></i><span>${page.note}</span>`;
+    wrap.appendChild(staticNote);
+  }
+
+  // --- CAT --- (по решению врача: либо врач сам вводит готовую сумму баллов, либо отдаёт
+  // тест пациенту — 8 отдельных доменов на странице врача не показываются вовсе, чтобы не
+  // перегружать страницу; домены остаются только на экране пациента, см.
+  // renderPatientHandoffPage(). Сумма живёт в a.catScore (простое число) независимо от
+  // того, как получена — вручную или из ответов пациента.
+  const cat = page.catScale;
+  const catCard = el('div', 'card');
+  catCard.style.cursor = 'default';
+  const catHeader = el('p', 'group-label');
+  catHeader.style.margin = '0 0 4px';
+  catHeader.textContent = cat.label;
+  catCard.appendChild(catHeader);
+  if (cat.patientHandoff) {
+    catCard.appendChild(renderPatientHandoffButton({ pageId: page.id, scaleField: 'catScale' }, cat.label));
+  }
+  const catInputRow = document.createElement('div');
+  catInputRow.style.marginTop = '8px';
+  const catInputLbl = document.createElement('label');
+  catInputLbl.textContent = 'Сумма баллов CAT (0–40)';
+  catInputLbl.style.display = 'block';
+  catInputLbl.style.fontSize = '12.5px';
+  catInputLbl.style.color = 'var(--text-secondary)';
+  const catInput = document.createElement('input');
+  catInput.type = 'number';
+  catInput.min = '0';
+  catInput.max = '40';
+  catInput.step = '1';
+  catInput.style.width = '100%';
+  catInput.placeholder = 'напр. 14';
+  catInput.value = a.catScore !== undefined ? a.catScore : '';
+  catInput.oninput = () => {
+    a.catScore = catInput.value === '' ? undefined : parseInt(catInput.value, 10);
+  };
+  commitOnEnter(catInput);
+  catInputRow.appendChild(catInputLbl);
+  catInputRow.appendChild(catInput);
+  catCard.appendChild(catInputRow);
+  if (cat.criteria) {
+    catCard.appendChild(renderExpandable(cat, page.id));
+  }
+  wrap.appendChild(catCard);
+
+  // --- mMRC ---
+  const mmrc = page.mmrcScale;
+  const mmrcCard = el('div', 'card');
+  mmrcCard.style.cursor = 'default';
+  const mmrcHeader = el('p', 'group-label');
+  mmrcHeader.style.margin = '0 0 4px';
+  mmrcHeader.textContent = mmrc.label;
+  mmrcCard.appendChild(mmrcHeader);
+  if (mmrc.patientHandoff) {
+    mmrcCard.appendChild(renderPatientHandoffButton({ pageId: page.id, scaleField: 'mmrcScale' }, mmrc.label));
+  }
+  const mmrcStack = renderScaleOptionCards(mmrc.options, a.mmrc, (v) => { a.mmrc = v; renderPage(); });
+  mmrcStack.style.marginTop = '8px';
+  mmrcCard.appendChild(mmrcStack);
+  wrap.appendChild(mmrcCard);
+
+  // --- Частота обострений ---
+  const freq = page.frequency;
+  const freqCard = el('div', 'card');
+  freqCard.style.cursor = 'default';
+  const freqHeader = el('p', 'group-label');
+  freqHeader.style.margin = '0 0 4px';
+  freqHeader.textContent = 'Обострения за последний год';
+  freqCard.appendChild(freqHeader);
+  const freqStack = el('div', 'stack');
+  freqStack.style.marginTop = '8px';
+  freq.countOptions.forEach(opt => {
+    const selected = a.freqCount === opt.value;
+    const optCard = el('div', 'card option' + (selected ? ' selected' : ''));
+    optCard.appendChild(renderRadioRow(opt.label, null, null, selected));
+    optCard.onclick = () => { a.freqCount = opt.value; renderPage(); };
+    freqStack.appendChild(optCard);
+  });
+  freqCard.appendChild(freqStack);
+  const hospRow = el('label', 'check-row');
+  hospRow.style.marginTop = '10px';
+  const hospBox = document.createElement('input');
+  hospBox.type = 'checkbox';
+  hospBox.checked = a.hospitalization;
+  hospBox.onchange = () => { a.hospitalization = hospBox.checked; renderPage(); };
+  const hospSpan = el('span', null);
+  hospSpan.textContent = freq.hospitalizationLabel;
+  hospRow.appendChild(hospBox);
+  hospRow.appendChild(hospSpan);
+  freqCard.appendChild(hospRow);
+  wrap.appendChild(freqCard);
+
+  // --- Результат: вычисленная группа (не переопределяется вручную) ---
+  const group = deriveScoredAssessmentGroup(page);
+  const groupNote = el('div', 'note');
+  groupNote.style.marginTop = '4px';
+  groupNote.innerHTML = group
+    ? `<i class="ti ti-report-analytics"></i><span><b>${group.text}</b></span>`
+    : `<i class="ti ti-info-circle"></i><span>Заполните CAT, mMRC и частоту обострений — группа вычисляется автоматически по Рис. 1 КР и не редактируется вручную.</span>`;
+  wrap.appendChild(groupNote);
+
+  if (page.references) {
+    page.references.forEach(ref => wrap.appendChild(renderPageReference(page.id, ref)));
+  }
+
+  return wrap;
+}
+
+// Одна строка CAT (общая для врачебного вида и экрана пациента, см. renderPatientHandoffPage) —
+// градуированный числовой ряд 0-5 (по решению врача — пациенту так визуально проще, чем
+// выпадающий список), без предзаполненного значения по умолчанию: пока домен не отвечен
+// явно, сумма (computeCatScore) не считается вовсе, а не молча считается нулём.
+function renderCatDomainField(dom, currentValue, onChange) {
+  const row = document.createElement('div');
+  row.style.marginTop = '10px';
+  const lbl = document.createElement('p');
+  lbl.className = 'option-title';
+  lbl.style.margin = '0';
+  lbl.textContent = dom.question;
+  const hint = el('p', 'option-hint');
+  hint.textContent = `${dom.low} (0) — ${dom.high} (5)`;
+  const scale = el('div', 'num-scale');
+  for (let v = 0; v <= 5; v++) {
+    const item = el('div', 'num-scale-item' + (currentValue === v ? ' selected' : ''));
+    item.textContent = v;
+    item.onclick = () => onChange(v);
+    scale.appendChild(item);
+  }
+  row.appendChild(lbl);
+  row.appendChild(hint);
+  row.appendChild(scale);
+  return row;
+}
+
+// Сумма CAT — null, если хоть один из 8 доменов не отвечен (не считаем частичную сумму,
+// т.к. незаполненный пункт молча трактовался бы как 0 — заведомо неверно).
+function computeCatScore(catScale, catAnswers) {
+  let sum = 0;
+  for (const dom of catScale.domains) {
+    const v = catAnswers ? catAnswers[dom.key] : undefined;
+    if (v === undefined || v === null) return null;
+    sum += v;
+  }
+  return sum;
+}
+
+// Правило вывода группы (Рис. 1 КР "ХОБЛ" 2024, GOLD 2023) — безвилочное:
+// госпитализация ИЛИ ≥2 обострений средней тяжести за год -> E (независимо от симптомов);
+// иначе при CAT≥10 или mMRC≥2 -> B; иначе -> A. Возвращает null, пока не заполнены все три
+// входа (CAT, mMRC, частота) — до этого группа не показывается и не пишется в диагноз.
+// CAT — простое число a.catScore (страница врача больше не считает сумму по доменам сама:
+// либо врач вводит готовую сумму текстовым полем, либо она приходит с экрана пациента —
+// computeCatScore() используется только ТАМ, для гейтинга "Готово" по 8 доменам).
+function deriveScoredAssessmentGroup(page) {
+  const a = state.answers[page.id];
+  if (!a) return null;
+  const catScore = a.catScore;
+  if (catScore === undefined || catScore === null || isNaN(catScore) || a.mmrc === undefined || !a.freqCount) return null;
+
+  const letter = (a.hospitalization || a.freqCount === '2plus')
+    ? 'E'
+    : (catScore >= 10 || a.mmrc >= 2 ? 'B' : 'A');
+
+  const freq = page.frequency;
+  const countOpt = freq.countOptions.find(o => o.value === a.freqCount);
+  let frequencyLabel = countOpt ? countOpt.shortLabel : '';
+  if (a.hospitalization) frequencyLabel += (freq.hospitalizationSuffix || ', в т.ч. с госпитализацией');
+
+  const text = page.template
+    .replace('{group}', letter)
+    .replace('{catScore}', catScore)
+    .replace('{mmrcValue}', a.mmrc)
+    .replace('{frequencyLabel}', frequencyLabel);
+
+  return { letter, text };
+}
+
+// ---------- Экран передачи опросника пациенту (generic, добавлено для ХОБЛ) ----------
+// Тот же паттерн, что renderIcdPage(): отдельный "экран" поверх текущей wizard-страницы, не
+// часть pages[]. Пациент видит ТОЛЬКО вопросы, без интерпретации и без суммы баллов (по
+// решению врача) — открытие экрана сразу обнуляет прежние ответы по этой шкале, в т.ч.
+// черновые ответы врача, без предупреждения (тоже по решению врача). "Готово" неактивна,
+// пока не отвечены ВСЕ пункты шкалы. Ответы пишутся в те же ключи state.answers, что и
+// обычный врачебный ввод — при возврате остальной движок не отличает, кто именно заполнял.
+//
+// Локатор шкалы — {pageId, itemId?, scaleField} (generic, обобщено при добавлении ВАШ Борга
+// у ХОБЛ — изначально шкала могла жить только на самой scoredAssessment-странице [catScale/
+// mmrcScale], теперь может висеть и на ПУНКТЕ multi-страницы через item.patientScale, напр.
+// «С обострением» → ВАШ Борга). itemId не задан → шкала на уровне страницы (page[scaleField]),
+// ответ хранится в state.answers[pageId]; itemId задан → шкала на уровне пункта чекбокс-списка
+// (item[scaleField]), ответ — в state.answers.findings[itemId]. resolveScaleContext()
+// возвращает единую форму для обоих случаев, дальше движок работает с ней одинаково.
+function resolveScaleContext(locator) {
+  const { pageId, itemId, scaleField } = locator;
+  const page = state.data.pages.find(p => p.id === pageId);
+  let scale, answer;
+  if (itemId) {
+    const item = page.items.find(i => i.id === itemId);
+    scale = item[scaleField];
+    if (!state.answers.findings) state.answers.findings = {};
+    if (!state.answers.findings[itemId]) state.answers.findings[itemId] = { checked: true };
+    answer = state.answers.findings[itemId];
+  } else {
+    scale = page[scaleField];
+    if (!state.answers[pageId]) state.answers[pageId] = {};
+    answer = state.answers[pageId];
+  }
+  const valueKey = scale.key;
+  const isSum = !!scale.domains;
+  return { scale, answer, valueKey, isSum };
+}
+
+function openPatientHandoff(locator) {
+  const { scale, answer, valueKey, isSum } = resolveScaleContext(locator);
+  answer[valueKey] = isSum ? {} : undefined;
+  state.patientHandoffOpen = locator;
+  renderPage();
+}
+
+function renderPatientHandoffButton(locator, scaleLabel) {
+  const btn = el('button', 'secondary-btn');
+  btn.style.marginTop = '8px';
+  btn.style.width = '100%';
+  btn.innerHTML = '<i class="ti ti-device-mobile"></i>Дать пациенту пройти тест';
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    openPatientHandoff(locator);
+  };
+  return btn;
+}
+
+function renderPatientHandoffPage() {
+  root.innerHTML = '';
+  const locator = state.patientHandoffOpen;
+  const { scale, answer, valueKey, isSum } = resolveScaleContext(locator);
+
+  // Минимальная шапка (по решению врача) — только название шкалы и одна строка инструкции,
+  // без бренда мастера/нозологии над ней.
+  const header = el('div', 'header');
+  header.innerHTML = `<h1>${scale.label}</h1><p class="option-hint">Отметьте, что ближе всего к вашему состоянию сейчас.</p>`;
+  root.appendChild(header);
+
+  const wrap = el('div', 'stack');
+
+  if (isSum) {
+    scale.domains.forEach(dom => {
+      const card = el('div', 'card');
+      card.style.cursor = 'default';
+      card.appendChild(renderCatDomainField(dom, answer[valueKey][dom.key], (v) => { answer[valueKey][dom.key] = v; renderPage(); }));
+      wrap.appendChild(card);
+    });
+  } else {
+    wrap.appendChild(renderScaleOptionCards(scale.options, answer[valueKey], (v) => { answer[valueKey] = v; renderPage(); }));
+  }
+  root.appendChild(wrap);
+
+  const complete = isSum
+    ? scale.domains.every(dom => answer[valueKey][dom.key] !== undefined)
+    : answer[valueKey] !== undefined;
+
+  const nav = el('div', 'nav-row');
+
+  // "Назад" — выйти можно и не ответив на всё (по решению врача); в этом случае результат
+  // сбрасывается: незавершённый ответ пациента не должен молча остаться в состоянии как
+  // будто это законченные данные. Тот же сброс, что и при открытии экрана (openPatientHandoff),
+  // просто без повторного захода на экран.
+  const back = el('button', 'secondary-btn');
+  back.textContent = 'Назад';
+  back.onclick = () => {
+    answer[valueKey] = isSum ? {} : undefined;
+    state.patientHandoffOpen = null;
+    renderPage();
+  };
+  nav.appendChild(back);
+
+  const done = el('button', 'primary-btn');
+  done.textContent = 'Готово';
+  if (!complete) done.style.opacity = '0.5';
+  done.onclick = () => {
+    if (!complete) return;
+    // Для суммируемой шкалы (CAT) сумма по доменам пишется в отдельное поле <ключ>Score
+    // (напр. a.catScore) — то же поле, которое врач мог бы заполнить вручную текстовым полем
+    // на своей странице (см. renderScoredAssessment). Один источник истины для отображения
+    // независимо от способа получения числа. Для одиночного выбора (mMRC/Борг) значение и так
+    // уже лежит прямо в answer[valueKey] — отдельного поля с суммой не нужно.
+    if (isSum) answer[valueKey + 'Score'] = computeCatScore(scale, answer[valueKey]);
+    state.patientHandoffOpen = null;
+    renderPage();
+  };
+  nav.appendChild(done);
+  root.appendChild(nav);
 }
 
 function renderRadioRow(label, sub, hint, selected) {
@@ -1263,18 +1687,31 @@ function assembleDiagnosisSentence() {
       if (a.degreeStatus && a.degreeStatus.diagnosisText) parts.push(a.degreeStatus.diagnosisText);
     } else if (page.type === 'multi') {
       const findingsText = [];
+      // item.noPrefixDegrees (генерик, добавлено для ХОБЛ) — см. подробный комментарий в
+      // "flowing"-варианте ниже. Здесь (легаси-стиль) все находки страницы — один склеенный
+      // блок, поэтому проще: префикс приписывается один раз перед ВСЕМ блоком, только если
+      // среди отмеченных пунктов есть хотя бы один НЕ в подавляющем значении.
+      let anyNonSuppressed = false;
       page.items.forEach(item => {
         const f = a.findings && a.findings[item.id];
         if (!findingHasContent(item, f)) return;
         findingsText.push(renderFindingTemplate(item, f));
+        const suppressed = item.noPrefixDegrees && f && item.noPrefixDegrees.includes(f.degree);
+        if (!suppressed) anyNonSuppressed = true;
       });
       // page.diagnosisPrefix (генерик) — префикс, добавляемый один раз перед всей
       // склеенной группой находок этой страницы (напр. "Осложнения: "), а не перед
       // каждым отдельным пунктом. Используется у ГЭРБ.
-      if (findingsText.length) parts.push((page.diagnosisPrefix || '') + findingsText.join('. ') + '.');
+      if (findingsText.length) {
+        const prefix = (page.diagnosisPrefix && anyNonSuppressed) ? page.diagnosisPrefix : '';
+        parts.push(prefix + findingsText.join('. ') + '.');
+      }
     } else if (page.type === 'compound') {
       const text = buildCompoundPageText(page);
       if (text) parts.push(text);
+    } else if (page.type === 'scoredAssessment') {
+      const group = deriveScoredAssessmentGroup(page);
+      if (group) parts.push(group.text);
     }
   });
 
@@ -1347,11 +1784,24 @@ function assembleDiagnosisFlowing() {
       // прежнее поведение (везде один и тот же page.joiner), ничего не меняется у уже
       // выпущенных нозологий.
       let firstOnThisPage = true;
+      // item.noPrefixDegrees (генерик, добавлено для ХОБЛ — "ДН 0 ст." не должно читаться
+      // как осложнение) — необязательный список значений item.kind:"degree", при которых
+      // ЭТОТ конкретный пункт не забирает page.diagnosisPrefix на себя, даже если оказался
+      // первым отмеченным пунктом страницы; префикс просто ждёт следующего отмеченного
+      // пункта, который не подавлен (prefixPending остаётся true). Если ВСЕ отмеченные
+      // пункты страницы подавлены — префикс не появляется вовсе, как и должно быть у "ДН 0
+      // ст." в одиночку. Не задано ни у одного item ни одной уже выпущенной нозологии —
+      // поведение не меняется.
+      let prefixPending = !!page.diagnosisPrefix;
       page.items.forEach(item => {
         const f = a.findings && a.findings[item.id];
         if (!findingHasContent(item, f)) return;
         let text = renderFindingTemplate(item, f);
-        if (firstOnThisPage && page.diagnosisPrefix) text = page.diagnosisPrefix + text;
+        const suppressPrefixHere = prefixPending && item.noPrefixDegrees && f && item.noPrefixDegrees.includes(f.degree);
+        if (prefixPending && !suppressPrefixHere) {
+          text = page.diagnosisPrefix + text;
+          prefixPending = false;
+        }
         const defaultJoiner = (firstOnThisPage && page.firstItemJoiner !== undefined) ? page.firstItemJoiner : pageJoiner;
         firstOnThisPage = false;
         const itemKey = item.assembleIndex !== undefined ? item.assembleIndex : pageKey;
@@ -1361,6 +1811,9 @@ function assembleDiagnosisFlowing() {
     } else if (page.type === 'compound') {
       const text = buildCompoundPageText(page);
       if (text) units.push({ key: pageKey, seq: units.length, text, joiner: pageJoiner });
+    } else if (page.type === 'scoredAssessment') {
+      const group = deriveScoredAssessmentGroup(page);
+      if (group) units.push({ key: pageKey, seq: units.length, text: group.text, joiner: pageJoiner });
     }
   });
 
@@ -1534,6 +1987,7 @@ function renderNav(page) {
 function canProceed(page) {
   if (page.type === 'single') return state.answers[page.id === 'risk' ? 'risk' : page.id] !== undefined;
   if (page.type === 'single_grouped') return !!state.answers.degreeStatus;
+  if (page.type === 'scoredAssessment') return !!deriveScoredAssessmentGroup(page);
   return true;
 }
 

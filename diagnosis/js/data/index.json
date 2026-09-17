@@ -118,5 +118,13 @@
     "ready": true,
     "section": "pulmonology",
     "sectionName": "Пульмонология"
+  },
+  {
+    "id": "chronic_obstructive_pulmonary_disease",
+    "name": "Хроническая обструктивная болезнь лёгких",
+    "file": "chronic_obstructive_pulmonary_disease.json",
+    "ready": true,
+    "section": "pulmonology",
+    "sectionName": "Пульмонология"
   }
 ]
