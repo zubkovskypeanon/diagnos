@@ -365,6 +365,32 @@ function renderPageReference(pageId, ref) {
     wrap.appendChild(list);
   }
 
+  // ref.image (опционально, generic, добавлено при работе над Хроническим панкреатитом) —
+  // растровая схема/алгоритм из текста самой КР (напр. Приложение Б), для случаев, когда
+  // ход рассуждения официально дан только как рисунок, а не как таблица/текст, и пересказ
+  // текстом рискует исказить ветвление. ref.image.src — data URI (страница КР растеризована
+  // и встроена как base64, без похода во внешнюю сеть); ref.image.alt — обязателен по
+  // доступности; ref.image.caption — опциональная подпись под картинкой (напр. номер
+  // алгоритма и страница КР). Ничего не меняет в существующих ref без image — поле нигде
+  // больше не задано.
+  if (ref.image) {
+    const img = document.createElement('img');
+    img.src = ref.image.src;
+    img.alt = ref.image.alt || ref.label;
+    img.style.maxWidth = '100%';
+    img.style.display = 'block';
+    img.style.margin = '8px 0';
+    img.style.borderRadius = '8px';
+    img.style.border = '1px solid var(--border, #e2e8f0)';
+    wrap.appendChild(img);
+    if (ref.image.caption) {
+      const cap = el('p', 'option-hint');
+      cap.style.marginTop = '4px';
+      cap.textContent = ref.image.caption;
+      wrap.appendChild(cap);
+    }
+  }
+
   return wrap;
 }
 

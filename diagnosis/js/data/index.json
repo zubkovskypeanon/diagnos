@@ -126,5 +126,13 @@
     "ready": true,
     "section": "pulmonology",
     "sectionName": "Пульмонология"
+  },
+  {
+    "id": "chronic_pancreatitis",
+    "name": "Хронический панкреатит",
+    "file": "chronic_pancreatitis.json",
+    "ready": true,
+    "section": "gastroenterology",
+    "sectionName": "Гастроэнтерология"
   }
 ]
