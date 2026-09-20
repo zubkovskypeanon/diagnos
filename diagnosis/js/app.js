@@ -444,9 +444,28 @@ function renderMulti(page) {
 
     // Раскрываемая подсказка-критерии под пунктом чекбокс-списка (напр. классификация
     // Форрест под "Кровотечение") — тот же механизм, что и opt.criteria в single,
-    // показывается независимо от того, отмечен чекбокс или нет.
-    if (item.criteria) {
+    // по умолчанию показывается независимо от того, отмечен чекбокс или нет.
+    //
+    // item.criteriaOnlyIfChecked (генерик, добавлено для СД2 — страница «Осложнения» на
+    // одной странице объединяет ~14 пунктов, подсказки всех сразу были бы избыточны) —
+    // необязательный флаг, если true, criteria рендерится только при answer.checked.
+    // Не задан ни у одного пункта уже выпущенных нозологий (Форрест у ЯБ, Фредриксен у ГБ
+    // и т.п.) — их поведение не меняется.
+    if (item.criteria && (!item.criteriaOnlyIfChecked || answer.checked)) {
       card.appendChild(renderExpandable(item, page.id));
+    }
+
+    // item.references (генерик, добавлено для СД2 — нефропатия) — то же самое, что
+    // page.references (таблица/note/groups/image, см. renderPageReference), но привязано
+    // к ОТДЕЛЬНОМУ пункту чекбокс-списка, а не ко всей странице, и рендерится только когда
+    // пункт отмечен (в отличие от page.references, который виден всегда). Нужно, когда
+    // подсказка — не список критериев (item.criteria поддерживает только плоский список), а
+    // полноценная референсная таблица (напр. стадии ХБП по СКФ + классификация по
+    // альбуминурии, Алгоритмы РАЭ по СД, стр. 63) — переиспользует renderPageReference()
+    // без дублирования кода, ключ открытия/закрытия — составной (page.id + item.id), чтобы
+    // не конфликтовать с page.references той же страницы или другими пунктами.
+    if (answer.checked && item.references) {
+      item.references.forEach(ref => card.appendChild(renderPageReference(page.id + '__' + item.id, ref)));
     }
 
     if (answer.checked && item.kind === 'degree') {
@@ -499,8 +518,30 @@ function renderMulti(page) {
     }
 
     if (answer.checked && item.kind === 'compound') {
-      const row = el('div', 'inline-fields');
+      // item.stackFields (генерик, добавлено для СД2 — СДС: конечность с подписью сверху,
+      // форма отдельной строкой ниже, а не бок о бок как OD/OS у ретинопатии) — опциональный
+      // флаг уровня пункта: контейнер полей — вертикальная колонка (.stack) вместо горизонтального
+      // ряда (.inline-fields). Не задан ни у одного уже выпущенного compound-пункта (ХБП/стеноз
+      // у ГБ/ЯБ, ретинопатия/нефропатия у СД2) — их раскладка не меняется.
+      const row = el('div', item.stackFields ? 'stack' : 'inline-fields');
       item.fields.forEach(fld => {
+        // fld.label (генерик, добавлено для СД2 — ретинопатия OD/OS) — необязательная
+        // подпись над конкретным полем (напр. "Правый глаз" / "Левый глаз"), когда одного
+        // fld.prefix (виден только в собранной строке диагноза, не в самой форме) мало,
+        // чтобы понять на экране, какое поле за что отвечает. Не задано ни у одного fld
+        // ни одной уже выпущенной нозологии (ХБП у ГБ, стеноз у ЯБ) — их вёрстка не
+        // меняется: без label поле рендерится в общий row, как и раньше.
+        let target = row;
+        if (fld.label) {
+          target = el('div', null);
+          target.style.display = 'flex';
+          target.style.flexDirection = 'column';
+          target.style.gap = '4px';
+          const lbl = el('span', 'group-label');
+          lbl.textContent = fld.label;
+          target.appendChild(lbl);
+          row.appendChild(target);
+        }
         // fld.type === 'freetext' — текстовое поле вместо select, для случаев, когда
         // КР не даёт формального перечня значений (напр. локализация стеноза у ЯБ).
         if (fld.type === 'freetext') {
@@ -510,7 +551,7 @@ function renderMulti(page) {
           input.value = answer[fld.key] || '';
           input.oninput = () => { answer[fld.key] = input.value; state.answers.findings[item.id] = answer; };
           commitOnEnter(input);
-          row.appendChild(input);
+          target.appendChild(input);
           return;
         }
         const sel = document.createElement('select');
@@ -521,9 +562,23 @@ function renderMulti(page) {
         });
         if (!answer[fld.key]) answer[fld.key] = fld.default;
         sel.onchange = () => { answer[fld.key] = sel.value; state.answers.findings[item.id] = answer; renderPage(); };
-        row.appendChild(sel);
+        target.appendChild(sel);
       });
       card.appendChild(row);
+    }
+
+    // item.ckdEpiCalc / item.wifiCalc (генерик, добавлено для СД2 — нефропатия/СДС) —
+    // те же калькуляторы, что уже есть в приложении (renderCkdEpiCalc — легаси-механизм,
+    // жёстко привязанный к page.id === 'gfr_stage' у отдельной нозологии ХБП, см. renderSingle;
+    // renderWifiCalc — новый, см. ниже), теперь доступны и с чекбокс-пункта multi-страницы
+    // любой нозологии через простой булев флаг. Оба калькулятора самодостаточны (state.ckdEpi /
+    // state.wifi — глобальные, не завязаны на page.id/item.id) и ничего не пишут в ответ
+    // пункта — врач переносит результат в select вручную, как и раньше.
+    if (answer.checked && item.ckdEpiCalc) {
+      card.appendChild(renderCkdEpiCalc());
+    }
+    if (answer.checked && item.wifiCalc) {
+      card.appendChild(renderWifiCalc());
     }
 
     if (answer.checked && item.kind === 'freetext') {
@@ -1565,6 +1620,130 @@ function renderCkdEpiCalc() {
   return wrap;
 }
 
+// ---------- Калькулятор риска потери конечности WIfI (СДС) ----------
+// Источник: «Алгоритмы специализированной медицинской помощи больным сахарным диабетом»
+// (РАЭ, 12-й вып., 2026), разд. 14, стр. 101-103 — не действующая КР, формулировка не
+// сверена по тексту профильной КР. Классификация W (Wound, глубина поражения тканей
+// стопы), I (Ischemia, по ЛПИ/систолическому давлению в артерии голени/транскутанному
+// напряжению кислорода), fI (foot Infection, тяжесть инфекции стопы), каждая 0-3. Итоговый
+// риск потери конечности в течение 1 года и показания к реваскуляризации — из готовых
+// таблиц (не вычисляются по формуле, это справочные матрицы 4×4×4, перенесённые как есть).
+// Самодостаточен по образцу renderCkdEpiCalc — state.wifi глобальный, не завязан на
+// page.id/item.id, калькулятор только считает, вариант формы/конечности на самой странице
+// врач по-прежнему выбирает сам.
+const WIFI_RISK_LABELS = { 'ОН': 'Очень низкий', 'Н': 'Низкий', 'У': 'Умеренный', 'В': 'Высокий' };
+// [I][W] -> [fI0, fI1, fI2, fI3]
+const WIFI_LIMB_LOSS_MATRIX = [
+  [['ОН','ОН','Н','У'], ['ОН','ОН','Н','У'], ['Н','Н','У','В'], ['У','У','В','В']], // I-0
+  [['ОН','Н','У','В'], ['ОН','Н','У','В'], ['У','У','В','В'], ['В','В','В','В']],   // I-1
+  [['Н','Н','У','В'], ['Н','У','В','В'], ['У','В','В','В'], ['В','В','В','В']],     // I-2
+  [['Н','У','У','В'], ['У','У','В','В'], ['В','В','В','В'], ['В','В','В','В']]      // I-3
+];
+const WIFI_REVASC_MATRIX = [
+  [['ОН','ОН','ОН','ОН'], ['ОН','ОН','ОН','ОН'], ['ОН','ОН','ОН','ОН'], ['ОН','ОН','ОН','ОН']], // I-0
+  [['ОН','Н','Н','У'], ['Н','У','У','У'], ['У','У','В','В'], ['У','У','У','В']],                 // I-1
+  [['Н','Н','У','У'], ['У','В','В','В'], ['В','В','В','В'], ['В','В','В','В']],                  // I-2
+  [['У','В','В','В'], ['В','В','В','В'], ['В','В','В','В'], ['В','В','В','В']]                   // I-3
+];
+
+function renderWifiCalc() {
+  if (!state.wifi) state.wifi = { w: '0', i: '0', fi: '0', result: null };
+  const c = state.wifi;
+  const wrap = el('div', 'expand');
+  const isOpen = !!state['wifi-open'];
+  const btn = el('button', 'expand-toggle');
+  btn.textContent = isOpen ? 'Скрыть калькулятор WIfI (риск потери конечности)' : 'Показать калькулятор WIfI (риск потери конечности)';
+  btn.onclick = () => { state['wifi-open'] = !isOpen; renderPage(); };
+  wrap.appendChild(btn);
+  if (!isOpen) return wrap;
+
+  const note = el('div', 'note');
+  note.innerHTML = '<i class="ti ti-info-circle"></i><span>Классификация WIfI (Wound/Ischemia/foot Infection) — источник: «Алгоритмы» РАЭ, разд. 14, стр. 101-103, ' +
+    'не действующая КР. Калькулятор только считает риск по готовой матрице — вариант формы СДС на странице выбирает врач сам.</span>';
+  wrap.appendChild(note);
+
+  function gradeTable(title, headers, rows) {
+    const label = el('p', 'group-label');
+    label.style.marginTop = '10px';
+    label.textContent = title;
+    wrap.appendChild(label);
+    const table = document.createElement('table');
+    table.className = 'risk-table';
+    let html = '<tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
+    rows.forEach(row => { html += '<tr>' + row.map(cell => `<td>${cell}</td>`).join('') + '</tr>'; });
+    table.innerHTML = html;
+    wrap.appendChild(table);
+  }
+
+  gradeTable('W — глубина поражения тканей стопы', ['Степень', 'Язва', 'Гангрена'], [
+    ['0', 'нет', 'нет'],
+    ['1', 'малая поверхностная язва дистального отдела, без вовлечения костных структур (кроме дистальных фаланг)', 'нет'],
+    ['2', 'глубокая язва с вовлечением костей/суставов/сухожилий', 'ограничивается фалангами пальцев'],
+    ['3', 'обширная глубокая язва, в т.ч. пяточной области с вовлечением пяточной кости', 'распространяется на передний/средний отдел стопы ± пяточная кость']
+  ]);
+  gradeTable('I — ишемия', ['Степень', 'ЛПИ', 'Сист. АД в артерии голени, мм рт.ст.', 'Транскутанное напряжение O₂ / пальцевое давление, мм рт.ст.'], [
+    ['0', '≥0,8', '>100', '≥60'],
+    ['1', '0,6–0,79', '70–100', '40–59'],
+    ['2', '0,4–0,59', '50–70', '30–39'],
+    ['3', '≤0,39', '<50', '<30']
+  ]);
+  gradeTable('fI — инфекция стопы', ['Степень', 'Критерии'], [
+    ['0', 'нет симптомов и признаков инфекции'],
+    ['1 (лёгкая)', '2 из: локальный отёк/инфильтрация, эритема 0,5-2 см, местное напряжение/болезненность, локальная гипертермия, гнойное отделяемое'],
+    ['2 (средняя)', 'гиперемия >2 см или вовлечение структур глубже кожи/подкожной клетчатки (абсцесс, остеомиелит, септический артрит, фасциит), без системных признаков'],
+    ['3 (тяжёлая)', 'местная инфекция + 2 из: t° >38° или <36°, ЧСС >90, ЧД >20 или PaCO2 <32, лейкоциты >12000/<4000 или >10% юных форм']
+  ]);
+
+  function gradeSelect(labelText, key) {
+    const row = document.createElement('div');
+    row.style.marginTop = '8px';
+    const lbl = document.createElement('label');
+    lbl.textContent = labelText;
+    lbl.style.display = 'block';
+    lbl.style.fontSize = '12.5px';
+    lbl.style.color = 'var(--text-secondary)';
+    const sel = document.createElement('select');
+    sel.style.width = '100%';
+    sel.style.marginTop = '4px';
+    ['0', '1', '2', '3'].forEach(v => {
+      const o = document.createElement('option'); o.value = v; o.textContent = v;
+      if (c[key] === v) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => { c[key] = sel.value; renderPage(); };
+    row.appendChild(lbl);
+    row.appendChild(sel);
+    return row;
+  }
+
+  wrap.appendChild(gradeSelect('W (0-3)', 'w'));
+  wrap.appendChild(gradeSelect('I (0-3)', 'i'));
+  wrap.appendChild(gradeSelect('fI (0-3)', 'fi'));
+
+  const calcBtn = el('button', 'primary-btn');
+  calcBtn.style.marginTop = '10px';
+  calcBtn.textContent = 'Рассчитать';
+  calcBtn.onclick = () => {
+    const i = parseInt(c.i, 10), w = parseInt(c.w, 10), fi = parseInt(c.fi, 10);
+    const limbLoss = WIFI_LIMB_LOSS_MATRIX[i][w][fi];
+    const revasc = WIFI_REVASC_MATRIX[i][w][fi];
+    c.result = { limbLoss, revasc };
+    renderPage();
+  };
+  wrap.appendChild(calcBtn);
+
+  if (c.result) {
+    const resBox = el('div', 'note');
+    resBox.innerHTML = `<i class="ti ti-report-analytics"></i><span>` +
+      `<b>Риск потери конечности в течение 1 года: ${WIFI_RISK_LABELS[c.result.limbLoss]} (${c.result.limbLoss})</b><br>` +
+      `Показания к реваскуляризации (при контроле инфекции): ${WIFI_RISK_LABELS[c.result.revasc]} (${c.result.revasc})` +
+      `</span>`;
+    wrap.appendChild(resBox);
+  }
+
+  return wrap;
+}
+
 // Чистая функция расчёта (Приложение Г, п.7 КР): 4 ветки по полу и порогу креатинина.
 function computeCkdEpiGfr(sex, age, creatinineUmol) {
   const ratio = creatinineUmol / 88.4;
@@ -1871,7 +2050,15 @@ function renderFindingTemplate(item, f) {
     return t;
   }
   if (item.kind === 'degree') {
-    return item.template.replace('{degree}', f.degree || item.default);
+    // item.degreeAppend (генерик, добавлено для СД2 — ожирение: список/дропдаун показывает
+    // "III степени" как обычно, а в собранный текст диагноза для этого конкретного значения
+    // дополнительно подставляется суффикс — напр. "(морбидное)" для III степени, по прямому
+    // решению врача (ИМТ≥40 = морбидное ожирение вне зависимости от осложнений). Карта
+    // {значение: суффикс}, необязательная; не задана ни у одного другого degree-пункта —
+    // их сборка не меняется.
+    const val = f.degree || item.default;
+    const extra = (item.degreeAppend && item.degreeAppend[val]) || '';
+    return item.template.replace('{degree}', val + extra);
   }
   if (item.kind === 'freetext') {
     return item.template + (f.value ? item.freetextPrefix + f.value : '');

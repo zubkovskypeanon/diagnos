@@ -128,11 +128,27 @@
     "sectionName": "Пульмонология"
   },
   {
+    "id": "chronic_bronchitis",
+    "name": "Хронический бронхит",
+    "file": "chronic_bronchitis.json",
+    "ready": true,
+    "section": "pulmonology",
+    "sectionName": "Пульмонология"
+  },
+  {
     "id": "chronic_pancreatitis",
     "name": "Хронический панкреатит",
     "file": "chronic_pancreatitis.json",
     "ready": true,
     "section": "gastroenterology",
     "sectionName": "Гастроэнтерология"
+  },
+  {
+    "id": "diabetes_mellitus_type_2",
+    "name": "Сахарный диабет 2 типа",
+    "file": "diabetes_mellitus_type_2.json",
+    "ready": true,
+    "section": "endocrinology",
+    "sectionName": "Эндокринология"
   }
 ]
