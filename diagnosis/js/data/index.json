@@ -80,6 +80,14 @@
     "sectionName": "Ревматология"
   },
   {
+    "id": "ankylosing_spondylitis",
+    "name": "Анкилозирующий спондилит (болезнь Бехтерева)",
+    "file": "ankylosing_spondylitis.json",
+    "ready": true,
+    "section": "rheumatology",
+    "sectionName": "Ревматология"
+  },
+  {
     "id": "chronic_kidney_disease",
     "name": "Хроническая болезнь почек",
     "file": "chronic_kidney_disease.json",

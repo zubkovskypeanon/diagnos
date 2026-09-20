@@ -291,6 +291,16 @@ function renderSingle(page) {
     wrap.appendChild(scCard);
   }
 
+  // page.indexCalcs (генерик, добавлено для Болезни Бехтерева) — массив независимых
+  // клинических индексов на этой странице (BASDAI, ASDAS), каждый со своей карточкой:
+  // числовое поле для готового значения + опционально кнопка передачи пациенту + для
+  // индексов с лабораторным компонентом (ASDAS) — отдельное поле лабораторного значения.
+  // В отличие от page.scorecalc (один калькулятор, сумма баллов по факторам) их может быть
+  // несколько сразу на одной странице — по решению врача.
+  if (page.indexCalcs) {
+    page.indexCalcs.forEach(calc => wrap.appendChild(renderIndexCalc(page, calc)));
+  }
+
   if (page.references) {
     page.references.forEach(ref => wrap.appendChild(renderPageReference(page.id, ref)));
   }
@@ -890,7 +900,11 @@ function renderScoredAssessment(page) {
 // градуированный числовой ряд 0-5 (по решению врача — пациенту так визуально проще, чем
 // выпадающий список), без предзаполненного значения по умолчанию: пока домен не отвечен
 // явно, сумма (computeCatScore) не считается вовсе, а не молча считается нулём.
-function renderCatDomainField(dom, currentValue, onChange) {
+// maxValue (генерик, добавлено для Болезни Бехтерева — BASDAI/ASDAS используют ЧРШ 0-10,
+// не 0-5 как CAT) — необязательный параметр, по умолчанию 5 (прежнее поведение, CAT у ХОБЛ
+// его не передаёт — ничего не меняется).
+function renderCatDomainField(dom, currentValue, onChange, maxValue) {
+  const max = maxValue !== undefined ? maxValue : 5;
   const row = document.createElement('div');
   row.style.marginTop = '10px';
   const lbl = document.createElement('p');
@@ -898,9 +912,9 @@ function renderCatDomainField(dom, currentValue, onChange) {
   lbl.style.margin = '0';
   lbl.textContent = dom.question;
   const hint = el('p', 'option-hint');
-  hint.textContent = `${dom.low} (0) — ${dom.high} (5)`;
+  hint.textContent = `${dom.low} (0) — ${dom.high} (${max})`;
   const scale = el('div', 'num-scale');
-  for (let v = 0; v <= 5; v++) {
+  for (let v = 0; v <= max; v++) {
     const item = el('div', 'num-scale-item' + (currentValue === v ? ' selected' : ''));
     item.textContent = v;
     item.onclick = () => onChange(v);
@@ -922,6 +936,53 @@ function computeCatScore(catScale, catAnswers) {
     sum += v;
   }
   return sum;
+}
+
+// ---------- Калькуляторы клинических индексов на пациентских ЧРШ-доменах + опц. лабораторное
+// значение (generic: page.indexCalcs, добавлено для Болезни Бехтерева — BASDAI/ASDAS,
+// Прил. Г1/Г3 КР) ----------
+// В отличие от computeCatScore (плоская сумма доменов, используется CAT/группой ABE у ХОБЛ),
+// здесь формула — взвешенная (BASDAI: среднее с половинным весом последних двух пунктов;
+// ASDAS: линейная комбинация с ln/√ лабораторного маркера). scale.formulaType выбирает
+// формулу; answer.domains — пациентская часть (все домены обязательны, гарантируется
+// гейтингом "Готово" на экране пациента, см. renderPatientHandoffPage), answer.labValue/
+// answer.lab — лабораторный ввод врача (не часть опроса пациента, см. renderIndexCalc).
+// Возвращает null, если посчитать нельзя (для ASDAS — лабораторное значение ещё не введено) —
+// вызывающий код в этом случае НЕ затирает то, что было в answer.score раньше.
+function computeIndexCalcScore(scale, answer) {
+  const d = answer.domains || {};
+  if (scale.formulaType === 'basdai') {
+    // Индекс BASDAI (Прил. Г1 КР): (п.1+п.2+п.3+п.4+(п.5+п.6)/2) / 5
+    if ([d.q1, d.q2, d.q3, d.q4, d.q5, d.q6].some(v => v === undefined || v === null)) return null;
+    const raw = (d.q1 + d.q2 + d.q3 + d.q4 + (d.q5 + d.q6) / 2) / 5;
+    return roundTo(raw, 1);
+  }
+  if (scale.formulaType === 'asdas') {
+    const lab = answer.labValue;
+    if (lab === undefined || lab === null || isNaN(lab)) return null;
+    if ([d.back, d.global, d.joints, d.stiffness].some(v => v === undefined || v === null)) return null;
+    let raw;
+    if (answer.lab === 'esr') {
+      // ASDAS(СОЭ), Прил. Г3 КР
+      raw = 0.113 * d.global + 0.293 * Math.sqrt(Math.max(lab, 0)) + 0.086 * d.joints + 0.069 * d.stiffness + 0.079 * d.back;
+    } else {
+      // ASDAS(С-РБ), Прил. Г3 КР — предпочтительный вариант индекса по КР
+      raw = 0.121 * d.back + 0.110 * d.global + 0.073 * d.joints + 0.058 * d.stiffness + 0.579 * Math.log(lab + 1);
+    }
+    return roundTo(raw, 1);
+  }
+  return null;
+}
+
+function roundTo(n, decimals) {
+  const f = Math.pow(10, decimals);
+  return Math.round(n * f) / f;
+}
+
+// Русское форматирование десятичной дроби (запятая, не точка) — так во всех официальных
+// примерах КР ("BASDAI 7,8"). Генерик-хелпер, не завязан на конкретный индекс.
+function formatRuDecimal(n, decimals) {
+  return n.toFixed(decimals).replace('.', ',');
 }
 
 // Правило вывода группы (Рис. 1 КР "ХОБЛ" 2024, GOLD 2023) — безвилочное:
@@ -970,23 +1031,43 @@ function deriveScoredAssessmentGroup(page) {
 // ответ хранится в state.answers[pageId]; itemId задан → шкала на уровне пункта чекбокс-списка
 // (item[scaleField]), ответ — в state.answers.findings[itemId]. resolveScaleContext()
 // возвращает единую форму для обоих случаев, дальше движок работает с ней одинаково.
+// locator.indexCalcKey (генерик, добавлено для Болезни Бехтерева — BASDAI/ASDAS на странице
+// "Активность") — третья форма локатора, наряду с item-уровнем (itemId) и page-уровнем
+// (scaleField). Шкала живёт не в page[scaleField]/item[scaleField], а в массиве
+// page.indexCalcs (несколько независимых калькуляторов на одной странице — см.
+// renderIndexCalc). Ответ хранится в state.answers[pageId + '__' + indexCalcKey] — том же
+// объекте, что и ручной ввод итогового числа (answer.score) и, для ASDAS, лабораторного
+// значения (answer.labValue/answer.lab) — единый источник истины независимо от способа
+// заполнения. valueKey зафиксирован как 'domains' (вложенный объект под ответы пациента),
+// а не scale.key — здесь scale.key используется для другого (id калькулятора в JSON), чтобы
+// не путать с полем-контейнером опроса. isSum всегда true: у BASDAI/ASDAS пациентская часть
+// — это всегда набор ЧРШ-вопросов, а не одиночный выбор (в отличие от mMRC/Борга).
 function resolveScaleContext(locator) {
-  const { pageId, itemId, scaleField } = locator;
+  const { pageId, itemId, scaleField, indexCalcKey } = locator;
   const page = state.data.pages.find(p => p.id === pageId);
-  let scale, answer;
-  if (itemId) {
+  let scale, answer, valueKey, isSum;
+  if (indexCalcKey) {
+    scale = page.indexCalcs.find(c => c.key === indexCalcKey);
+    const icKey = pageId + '__' + indexCalcKey;
+    if (!state.answers[icKey]) state.answers[icKey] = {};
+    answer = state.answers[icKey];
+    valueKey = 'domains';
+    isSum = true;
+  } else if (itemId) {
     const item = page.items.find(i => i.id === itemId);
     scale = item[scaleField];
     if (!state.answers.findings) state.answers.findings = {};
     if (!state.answers.findings[itemId]) state.answers.findings[itemId] = { checked: true };
     answer = state.answers.findings[itemId];
+    valueKey = scale.key;
+    isSum = !!scale.domains;
   } else {
     scale = page[scaleField];
     if (!state.answers[pageId]) state.answers[pageId] = {};
     answer = state.answers[pageId];
+    valueKey = scale.key;
+    isSum = !!scale.domains;
   }
-  const valueKey = scale.key;
-  const isSum = !!scale.domains;
   return { scale, answer, valueKey, isSum };
 }
 
@@ -1026,7 +1107,7 @@ function renderPatientHandoffPage() {
     scale.domains.forEach(dom => {
       const card = el('div', 'card');
       card.style.cursor = 'default';
-      card.appendChild(renderCatDomainField(dom, answer[valueKey][dom.key], (v) => { answer[valueKey][dom.key] = v; renderPage(); }));
+      card.appendChild(renderCatDomainField(dom, answer[valueKey][dom.key], (v) => { answer[valueKey][dom.key] = v; renderPage(); }, scale.domainMax));
       wrap.appendChild(card);
     });
   } else {
@@ -1058,12 +1139,23 @@ function renderPatientHandoffPage() {
   if (!complete) done.style.opacity = '0.5';
   done.onclick = () => {
     if (!complete) return;
-    // Для суммируемой шкалы (CAT) сумма по доменам пишется в отдельное поле <ключ>Score
-    // (напр. a.catScore) — то же поле, которое врач мог бы заполнить вручную текстовым полем
-    // на своей странице (см. renderScoredAssessment). Один источник истины для отображения
-    // независимо от способа получения числа. Для одиночного выбора (mMRC/Борг) значение и так
-    // уже лежит прямо в answer[valueKey] — отдельного поля с суммой не нужно.
-    if (isSum) answer[valueKey + 'Score'] = computeCatScore(scale, answer[valueKey]);
+    // indexCalcKey (BASDAI/ASDAS, Болезнь Бехтерева) — считаем по формуле именно этого
+    // индекса (не плоская сумма, см. computeIndexCalcScore) и пишем результат прямо в
+    // answer.score — то же поле, которое врач мог бы заполнить вручную числом на своей
+        // странице (см. renderIndexCalc). Если формула не может посчитаться (для ASDAS — ещё
+    // не введено лабораторное значение), answer.score НЕ трогаем: то, что было введено
+    // вручную раньше, не затирается пустым результатом.
+    if (locator.indexCalcKey) {
+      const computed = computeIndexCalcScore(scale, answer);
+      if (computed !== null) answer.score = computed;
+    } else if (isSum) {
+      // Для суммируемой шкалы (CAT) сумма по доменам пишется в отдельное поле <ключ>Score
+      // (напр. a.catScore) — то же поле, которое врач мог бы заполнить вручную текстовым полем
+      // на своей странице (см. renderScoredAssessment). Один источник истины для отображения
+      // независимо от способа получения числа. Для одиночного выбора (mMRC/Борг) значение и так
+      // уже лежит прямо в answer[valueKey] — отдельного поля с суммой не нужно.
+      answer[valueKey + 'Score'] = computeCatScore(scale, answer[valueKey]);
+    }
     state.patientHandoffOpen = null;
     renderPage();
   };
@@ -1851,6 +1943,26 @@ function buildSingleFragmentText(page, opt) {
     }
     text = text.replace('{' + (page.scorecalc.key || 'scorecalc') + '}', scText);
   }
+  if (page.indexCalcs) {
+    // {indices} (генерик, добавлено для Болезни Бехтерева) — все заполненные индексы этой
+    // страницы (BASDAI, ASDAS) одним кластером в круглых скобках через "; ", по образцу
+    // официального примера КР: "очень высокая активность (BASDAI 7,8; ASDAS С-РБ – 3,7)".
+    // Пустая строка, если ни один индекс не заполнен — токен просто исчезает без пустых скобок.
+    const parts = [];
+    page.indexCalcs.forEach(calc => {
+      const icAnswer = state.answers[page.id + '__' + calc.key];
+      const score = icAnswer && icAnswer.score;
+      if (score === undefined || score === null || isNaN(score)) return;
+      let labLabel = '';
+      if (calc.labField) {
+        const lab = icAnswer.lab || calc.labField.default;
+        const labOpt = calc.labField.options.find(o => o.value === lab);
+        labLabel = labOpt ? labOpt.shortLabel : '';
+      }
+      parts.push(calc.resultTemplate.replace('{score}', formatRuDecimal(score, 1)).replace('{labLabel}', labLabel));
+    });
+    text = text.replace('{indices}', parts.length ? ' (' + parts.join('; ') + ')' : '');
+  }
   if (opt.freetextField) {
     const ff = opt.freetextField;
     const raw = state.answers[page.id + '-' + opt.id + '__' + ff.key] || '';
@@ -1938,6 +2050,44 @@ function findingHasContent(item, f) {
   return !!f.checked;
 }
 
+// ---------- Склейка нескольких multi-страниц через "и" (generic: page.groupWith,
+// добавлено для Болезни Бехтерева — "с внеаксиальными (X) и внескелетными (Y) проявлениями") ----------
+// Простой список отмеченных находок страницы, без diagnosisPrefix/noPrefixDegrees —
+// упрощённый путь специально для groupWith (см. ограничение в buildGroupedMultiText ниже).
+function buildMultiFindingsList(page) {
+  const a = state.answers;
+  const list = [];
+  page.items.forEach(item => {
+    const f = a.findings && a.findings[item.id];
+    if (!findingHasContent(item, f)) return;
+    list.push(renderFindingTemplate(item, f));
+  });
+  return list;
+}
+
+// anchorPage объявляет groupWith (id страниц-партнёров) + groupPrefix/groupConnector/
+// groupSuffix; КАЖДАЯ страница группы (включая anchor) несёт свой groupLabel. Пустая
+// страница выпадает из фразы целиком; если пусты все — вся фраза пропадает. Пример:
+// anchor.groupPrefix="с ", extraaxial.groupLabel="внеаксиальными",
+// extraskeletal.groupLabel="внескелетными", anchor.groupConnector=" и ",
+// anchor.groupSuffix=" проявлениями" ->
+// "с внеаксиальными (X, Y) и внескелетными (Z) проявлениями".
+// Ограничение (сознательное, под текущую задачу): diagnosisPrefix/noPrefixDegrees/
+// item.assembleIndex/item.joiner внутри сгруппированных страниц не поддержаны — если
+// понадобятся, buildGroupedMultiText придётся расширить, а не просто прописать в JSON.
+function buildGroupedMultiText(anchorPage, partnerPages) {
+  const segments = [];
+  [anchorPage, ...partnerPages].forEach(p => {
+    const items = buildMultiFindingsList(p);
+    if (items.length) segments.push({ label: p.groupLabel, text: items.join(', ') });
+  });
+  if (!segments.length) return '';
+  const connector = anchorPage.groupConnector !== undefined ? anchorPage.groupConnector : ' и ';
+  const prefix = anchorPage.groupPrefix !== undefined ? anchorPage.groupPrefix : '';
+  const suffix = anchorPage.groupSuffix !== undefined ? anchorPage.groupSuffix : '';
+  return prefix + segments.map(s => `${s.label} (${s.text})`).join(connector) + suffix;
+}
+
 // "Flowing"-стиль: одно предложение, фрагменты соединяются через page.joiner (по умолчанию
 // ", "), первый непустой фрагмент — без джойнера (он же начинает предложение с заглавной,
 // т.к. это headline-страница). Регистр остальных фрагментов НЕ трогаем программно — каждый
@@ -1960,11 +2110,23 @@ function assembleDiagnosisFlowing() {
   // тяжести отделяются точкой (см. примеры Указаний по ВПТ). Ни assembleIndex, ни joiner
   // не заданы ни у одного пункта уже выпущенных нозологий — их поведение не меняется.
   const units = [];
+  // page.groupWith (см. buildGroupedMultiText выше) — страницы-партнёры обрабатываются
+  // вместе с якорем и должны быть пропущены, когда цикл дойдёт до них по своему порядку.
+  const handledByGroup = new Set();
   state.data.pages.forEach((page, pageIdx) => {
+    if (handledByGroup.has(page.id)) return;
     if (page.suppressDiagnosisIf && conditionMet(page.suppressDiagnosisIf)) return;
     if (isPageSkipped(page)) return; // ФИКС: страница, скрытая через skipIf, не должна протаскивать протухший ответ, оставшийся в state.answers с прошлой ветки
     const pageKey = page.assembleIndex ?? pageIdx;
     const pageJoiner = page.joiner !== undefined ? page.joiner : ', ';
+
+    if (page.type === 'multi' && page.groupWith) {
+      const partnerPages = page.groupWith.map(id => state.data.pages.find(p => p.id === id)).filter(Boolean);
+      partnerPages.forEach(p => handledByGroup.add(p.id));
+      const text = buildGroupedMultiText(page, partnerPages);
+      if (text) units.push({ key: pageKey, seq: units.length, text, joiner: pageJoiner });
+      return;
+    }
 
     if (page.type === 'single') {
       const val = a[page.id];
@@ -2082,6 +2244,96 @@ function renderFindingTemplate(item, f) {
     return '';
   }
   return item.template;
+}
+
+// Карточка одного индекса из page.indexCalcs (генерик, добавлено для Болезни Бехтерева —
+// BASDAI/ASDAS на странице "Активность"). Ответ живёт в state.answers[pageId + '__' + calc.key]:
+// answer.score — итоговое число (единственное, что участвует в сборке диагноза, см.
+// buildSingleFragmentText), можно ввести напрямую ИЛИ получить через передачу пациенту
+// (renderPatientHandoffButton -> computeIndexCalcScore, см. renderPatientHandoffPage);
+// answer.lab/answer.labValue — лабораторный компонент (только если calc.labField задан,
+// напр. С-РБ/СОЭ у ASDAS) — вводит врач сам, это не часть опроса пациента.
+function renderIndexCalc(page, calc) {
+  const icKey = page.id + '__' + calc.key;
+  if (!state.answers[icKey]) state.answers[icKey] = {};
+  const a = state.answers[icKey];
+  const card = el('div', 'card');
+  card.style.cursor = 'default';
+  card.style.marginTop = '8px';
+
+  const header = el('p', 'group-label');
+  header.textContent = calc.label;
+  card.appendChild(header);
+
+  // Лабораторное значение (ASDAS) — вводится ДО передачи теста пациенту, если возможно:
+  // при "Готово" на экране пациента индекс считается сразу (см. renderPatientHandoffPage);
+  // если лабораторное значение появится позже, автоматического пересчёта нет — придётся
+  // либо переоткрыть экран пациента, либо ввести итоговое число вручную ниже.
+  if (calc.labField) {
+    const lf = calc.labField;
+    if (!a.lab) a.lab = lf.default;
+    const labRow = el('div', 'inline-fields');
+    labRow.style.marginTop = '8px';
+    const sel = document.createElement('select');
+    lf.options.forEach(o => {
+      const oe = document.createElement('option');
+      oe.value = o.value;
+      oe.textContent = o.label;
+      if (a.lab === o.value) oe.selected = true;
+      sel.appendChild(oe);
+    });
+    sel.onchange = () => {
+      // Переключение лабораторного маркера сбрасывает введённое значение — число для
+      // С-РБ и СОЭ не взаимозаменяемо, оставлять его молча было бы неверно.
+      if (a.lab !== sel.value) a.labValue = undefined;
+      a.lab = sel.value;
+      renderPage();
+    };
+    const labInput = document.createElement('input');
+    labInput.type = 'number';
+    labInput.step = '0.1';
+    labInput.placeholder = 'значение';
+    labInput.value = a.labValue !== undefined ? a.labValue : '';
+    labInput.oninput = () => { a.labValue = labInput.value === '' ? undefined : parseFloat(labInput.value); };
+    commitOnEnter(labInput);
+    labRow.appendChild(sel);
+    labRow.appendChild(labInput);
+    card.appendChild(labRow);
+    if (lf.note) {
+      const note = el('div', 'note');
+      note.style.marginTop = '6px';
+      note.innerHTML = `<i class="ti ti-info-circle"></i><span>${lf.note}</span>`;
+      card.appendChild(note);
+    }
+  }
+
+  if (calc.patientHandoff) {
+    const btn = renderPatientHandoffButton({ pageId: page.id, indexCalcKey: calc.key }, calc.label);
+    btn.style.marginTop = '8px';
+    card.appendChild(btn);
+  }
+
+  const scoreRow = document.createElement('div');
+  scoreRow.style.marginTop = '8px';
+  const scoreLbl = document.createElement('label');
+  scoreLbl.textContent = 'Итоговое значение ' + calc.label + ' (можно ввести напрямую)';
+  scoreLbl.style.display = 'block';
+  scoreLbl.style.fontSize = '12.5px';
+  scoreLbl.style.color = 'var(--text-secondary)';
+  const scoreInput = document.createElement('input');
+  scoreInput.type = 'number';
+  scoreInput.step = '0.1';
+  scoreInput.style.width = '100%';
+  scoreInput.value = a.score !== undefined ? a.score : '';
+  scoreInput.oninput = () => { a.score = scoreInput.value === '' ? undefined : parseFloat(scoreInput.value); };
+  commitOnEnter(scoreInput);
+  scoreRow.appendChild(scoreLbl);
+  scoreRow.appendChild(scoreInput);
+  card.appendChild(scoreRow);
+
+  if (calc.criteria) card.appendChild(renderExpandable(calc, page.id));
+
+  return card;
 }
 
 function renderResultBlock() {
