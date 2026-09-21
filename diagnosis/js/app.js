@@ -2,7 +2,15 @@
 const state = {
   nosologyId: null,
   data: null,
-  pageIndex: -1, // -1 = экран выбора нозологии
+  pageIndex: -1, // -1 = главный экран (разделы/список/поиск, см. renderHome)
+  index: null, // загруженный js/data/index.json — держим в state, чтобы не дёргать fetch
+              // заново при каждом возврате на главный экран (loadIndex() дорогой не был
+              // бы и так, но состояние раздела/поиска ниже всё равно нужно state)
+  sectionId: null, // выбранный раздел на главном экране, null = экран сетки разделов
+  searchQuery: '', // текст в поле поиска на экране разделов
+  about: null, // данные js/data/about.json, подгружаются лениво при открытии экрана
+  aboutOpen: false, // оверлей «О программе» поверх главного экрана — тот же паттерн,
+                     // что icdPageOpen/patientHandoffOpen у мастера (см. renderPage)
   answers: {},
   icdPageOpen: false, // отдельный экран выбора кода МКБ, поверх текущей pageIndex-страницы
   // Экран передачи опросника пациенту (generic, добавлено для ХОБЛ, см. renderPatientHandoffPage) —
@@ -71,24 +79,205 @@ function isEffectivelyLastPage(index) {
   return true;
 }
 
-// ---------- Рендер: список нозологий ----------
-function renderNosologyList(list) {
-  root.innerHTML = '';
-  const header = el('div', 'header');
-  header.innerHTML = '<p class="eyebrow">Формулировка диагноза</p><h1>Выбери нозологию</h1>';
-  root.appendChild(header);
+// ---------- Рендер: главный экран (разделы -> нозологии, поиск) ----------
+// Фиксированный порядок разделов на главном экране — не пересчитывается от состава
+// данных, разделы не сворачиваются в "Прочее" даже при 1-2 нозологиях внутри (решение
+// врача: при расширении списка нозологий не хочется потом разворачивать "Прочее").
+// Раздел, которого нет в этом списке, но встретился в data.section — не пропадает молча,
+// а дописывается в конец (см. orderedSectionIds) до ручного добавления сюда.
+const SECTION_ORDER = [
+  'cardiology', 'gastroenterology', 'pulmonology',
+  'endocrinology', 'nephrology', 'rheumatology', 'hematology'
+];
 
-  const listEl = el('div', 'stack');
+function orderedSectionIds() {
+  const seen = new Set();
+  const ids = [];
+  SECTION_ORDER.forEach(id => {
+    if (state.index.some(i => i.section === id)) { ids.push(id); seen.add(id); }
+  });
+  state.index.forEach(i => {
+    if (!seen.has(i.section)) { ids.push(i.section); seen.add(i.section); }
+  });
+  return ids;
+}
+
+// Общий рендер карточек нозологий — используется и внутри раздела, и в результатах
+// поиска. opts.showSection добавляет подпись раздела под названием (нужно только
+// в поиске, где результаты смешаны из разных разделов).
+function renderNosologyCards(container, list, opts) {
+  opts = opts || {};
   list.forEach(item => {
     const card = el('div', 'card option' + (item.ready ? '' : ' disabled'));
     card.innerHTML = `<span class="option-label">${item.name}</span>` +
+      (opts.showSection ? `<p class="option-hint">${item.sectionName}</p>` : '') +
       (item.ready ? '<i class="ti ti-chevron-right"></i>' : '<span class="badge">скоро</span>');
     if (item.ready) {
       card.onclick = () => openNosology(item);
     }
-    listEl.appendChild(card);
+    container.appendChild(card);
   });
+}
+
+// Экран верхнего уровня: плитки разделов + поле поиска. Поиск и список разделов
+// делят один контейнер (resultsEl), который перерисовывается сам по себе при вводе —
+// само поле поиска не пересоздаётся, иначе фокус/курсор терялись бы на каждый символ
+// (та же причина, по которой свободные текстовые поля мастера не дёргают полный
+// renderPage() на oninput, см. commitOnEnter выше).
+function renderSectionGrid() {
+  root.innerHTML = '';
+  const header = el('div', 'header');
+  header.innerHTML = '<p class="eyebrow">Формулировка диагноза</p><h1>Выбери раздел</h1>';
+  root.appendChild(header);
+
+  const search = document.createElement('input');
+  search.type = 'text';
+  search.className = 'search-field';
+  search.placeholder = 'Поиск по всем нозологиям';
+  search.value = state.searchQuery;
+  root.appendChild(search);
+
+  const resultsEl = el('div', 'stack');
+  root.appendChild(resultsEl);
+
+  const aboutLink = el('button', 'about-link');
+  aboutLink.textContent = 'О программе';
+  aboutLink.onclick = openAbout;
+  root.appendChild(aboutLink);
+
+  function renderResults() {
+    resultsEl.innerHTML = '';
+    const q = state.searchQuery.trim().toLowerCase();
+    if (!q) {
+      orderedSectionIds().forEach(sectionId => {
+        const items = state.index.filter(i => i.section === sectionId);
+        const card = el('div', 'card option');
+        card.innerHTML = `<span class="option-label">${items[0].sectionName}</span>` +
+          `<span class="badge">${items.length} ${pluralRu(items.length, ['нозология', 'нозологии', 'нозологий'])}</span>`;
+        card.onclick = () => { state.sectionId = sectionId; renderHome(); };
+        resultsEl.appendChild(card);
+      });
+      return;
+    }
+    const matches = state.index.filter(i => i.name.toLowerCase().includes(q));
+    if (!matches.length) {
+      const empty = el('p', 'option-hint');
+      empty.textContent = 'Ничего не найдено';
+      resultsEl.appendChild(empty);
+      return;
+    }
+    renderNosologyCards(resultsEl, matches, { showSection: true });
+  }
+
+  search.oninput = (e) => { state.searchQuery = e.target.value; renderResults(); };
+  renderResults();
+}
+
+// Экран одного раздела — список нозологий внутри него + возврат к разделам.
+function renderSectionList(sectionId) {
+  root.innerHTML = '';
+  const items = state.index.filter(i => i.section === sectionId);
+
+  const back = el('button', 'back-link');
+  back.innerHTML = '<i class="ti ti-chevron-left"></i> Все разделы';
+  back.onclick = () => { state.sectionId = null; renderHome(); };
+  root.appendChild(back);
+
+  const header = el('div', 'header');
+  header.innerHTML = `<p class="eyebrow">Формулировка диагноза</p><h1>${items[0] ? items[0].sectionName : ''}</h1>`;
+  root.appendChild(header);
+
+  const listEl = el('div', 'stack');
+  renderNosologyCards(listEl, items);
   root.appendChild(listEl);
+}
+
+// Диспетчер главного экрана — единственная точка входа, вызывается вместо
+// renderNosologyList из init() и из "К списку нозологий" (см. renderNav).
+// Поле поиска существует только на экране разделов (renderSectionGrid) — отдельной
+// ветки на state.searchQuery здесь не нужно: sectionId остаётся null, пока идёт поиск,
+// поэтому обычная проверка sectionId уже направляет куда нужно.
+// state.sectionId не сбрасывается при возврате из мастера — врач возвращается туда же,
+// откуда ушёл (в тот же раздел), а не на самый верх; searchQuery по той же причине
+// тоже не сбрасывается, хотя из-за null sectionId на итоговый экран это не влияет.
+function renderHome() {
+  if (state.aboutOpen) return renderAboutPage();
+  if (state.sectionId) return renderSectionList(state.sectionId);
+  return renderSectionGrid();
+}
+
+async function openAbout() {
+  if (!state.about) {
+    const res = await fetch('js/data/about.json');
+    state.about = await res.json();
+  }
+  state.aboutOpen = true;
+  renderHome();
+}
+
+function closeAbout() {
+  state.aboutOpen = false;
+  renderHome();
+}
+
+// Формат ДД.ММ.ГГГГ из 'YYYY-MM-DD' (BUILD_DATE в version.js) — без библиотек, дата
+// нужна только для отображения на этом единственном экране.
+function formatRuDate(iso) {
+  const [y, m, d] = iso.split('-');
+  return `${d}.${m}.${y}`;
+}
+
+function renderAboutPage() {
+  root.innerHTML = '';
+  const a = state.about;
+
+  const back = el('button', 'back-link');
+  back.innerHTML = '<i class="ti ti-chevron-left"></i> Назад';
+  back.onclick = closeAbout;
+  root.appendChild(back);
+
+  const header = el('div', 'header');
+  header.innerHTML = '<p class="eyebrow">Формулировка диагноза</p><h1>О программе</h1>';
+  root.appendChild(header);
+
+  const stack = el('div', 'stack');
+
+  a.idea.forEach(p => {
+    const box = el('div', 'note');
+    box.innerHTML = `<i class="ti ti-info-circle"></i><span>${p}</span>`;
+    stack.appendChild(box);
+  });
+
+  const teamLabel = el('p', 'group-label');
+  teamLabel.textContent = 'Рабочая группа';
+  stack.appendChild(teamLabel);
+
+  a.team.forEach(person => {
+    const card = el('div', 'card');
+    card.innerHTML = `<p class="option-title">${person.name} — ${person.role}</p>` +
+      `<p class="option-hint">${person.contribution}</p>`;
+    stack.appendChild(card);
+  });
+
+  const inviteLabel = el('p', 'group-label');
+  inviteLabel.textContent = 'Расширение рабочей группы';
+  stack.appendChild(inviteLabel);
+
+  // Ссылки на контакт добавляем только если они реально заданы в about.json —
+  // ничего не домысливаем и не подставляем фиктивный юзернейм.
+  const contactLinks = [];
+  if (a.contact && a.contact.telegram) contactLinks.push(`<a href="${a.contact.telegram}">Telegram</a>`);
+  if (a.contact && a.contact.max) contactLinks.push(`<a href="${a.contact.max}">MAX</a>`);
+  const invite = el('div', 'note');
+  invite.innerHTML = `<i class="ti ti-info-circle"></i><span>${a.invite}</span>` +
+    (contactLinks.length ? `<p class="contact-links">${contactLinks.join(' · ')}</p>` : '');
+  stack.appendChild(invite);
+
+  const versionLine = el('p', 'option-hint version-line');
+  versionLine.textContent = `Версия ${VERSION}` + (typeof BUILD_DATE !== 'undefined' ? ` · ${formatRuDate(BUILD_DATE)}` : '');
+  stack.appendChild(versionLine);
+
+  root.appendChild(stack);
 }
 
 async function openNosology(item) {
@@ -2427,14 +2616,14 @@ function renderNav(page) {
   } else {
     const back = el('button', 'secondary-btn');
     back.textContent = 'К списку нозологий';
-    back.onclick = () => { state.pageIndex = -1; init(); };
+    back.onclick = goToHome;
     wrap.appendChild(back);
   }
 
   if (isEffectivelyLastPage(state.pageIndex)) {
     const toList = el('button', 'primary-btn');
     toList.textContent = 'К списку нозологий';
-    toList.onclick = () => { state.pageIndex = -1; init(); };
+    toList.onclick = goToHome;
     wrap.appendChild(toList);
   } else {
     const next = el('button', 'primary-btn');
@@ -2496,15 +2685,65 @@ function commitOnEnter(input) {
 
 // ---------- Инициализация ----------
 async function init() {
-  const list = await loadIndex();
-  renderNosologyList(list);
+  if (!state.index) state.index = await loadIndex();
+  renderHome();
+}
+
+// "К списку нозологий" в мастере (см. renderNav) ведёт на стартовый экран разделов,
+// а не в тот раздел, откуда врач зашёл — по прямому решению врача (правка после
+// более раннего варианта, где sectionId нарочно сохранялся между заходами в мастер).
+function goToHome() {
+  state.pageIndex = -1;
+  state.sectionId = null;
+  state.searchQuery = '';
+  init();
 }
 
 init();
 
-// ---------- Service worker ----------
+// ---------- Service worker + баннер обновления ----------
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('service-worker.js');
+  // controllerchange стреляет один раз за смену активного worker'а, но на всякий
+  // случай — защита от повторной перезагрузки, если событие почему-то придёт дважды.
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    refreshing = true;
+    window.location.reload();
   });
+
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js').then((registration) => {
+      // Браузерная проверка обновлений идёт не чаще раза в сутки — для установленного
+      // PWA, которое неделями не "закрывают" по-настоящему, этого мало. Досверяем сами
+      // при каждом возврате приложения на передний план.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') registration.update();
+      });
+
+      registration.addEventListener('updatefound', () => {
+        const newWorker = registration.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener('statechange', () => {
+          // 'installed' при уже существующем controller — это обновление поверх
+          // рабочей версии, а не первая установка (при первой установке controller
+          // ещё нет вовсе, и показывать баннер "обновить" там нечего и незачем).
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            showUpdateBanner(newWorker);
+          }
+        });
+      });
+    });
+  });
+}
+
+function showUpdateBanner(waitingWorker) {
+  if (document.querySelector('.update-banner')) return; // не дублировать баннер
+  const banner = el('div', 'update-banner');
+  banner.innerHTML = '<span>Доступно обновление приложения</span><button>Обновить</button>';
+  banner.querySelector('button').onclick = () => {
+    waitingWorker.postMessage('SKIP_WAITING');
+    banner.remove();
+  };
+  document.body.appendChild(banner);
 }

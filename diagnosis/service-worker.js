@@ -1,11 +1,21 @@
-const CACHE_NAME = 'diagnosis-app-v38';
+// Byte-for-byte сравнение импортированных скриптов при проверке обновления
+// service worker'а поддерживается Chrome/Edge с версии 78 (2019) и Firefox —
+// т.е. правкой одного version.js обновление у пользователя обнаружится сама.
+// Для Safari/iOS это поведение не подтверждено официальной документацией —
+// если аудитория когда-нибудь станет заметно iOS-центричной, стоит это
+// перепроверить отдельно, а не полагаться на общее предположение.
+importScripts('./version.js');
+
+const CACHE_NAME = 'diagnosis-app-v' + VERSION;
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.json',
+  './version.js',
   './css/style.css',
   './js/app.js',
   './js/data/index.json',
+  './js/data/about.json',
   './js/data/hypertension.json',
   './js/data/heart_failure.json',
   './js/data/atrial_fibrillation.json',
@@ -27,14 +37,36 @@ const APP_SHELL = [
   './js/data/chronic_pancreatitis.json',
   './js/data/diabetes_mellitus_type_2.json',
   './icons/icon-192.png',
-  './icons/icon-512.png'
+  './icons/icon-512.png',
+  './icons/icon-maskable-192.png',
+  './icons/icon-maskable-512.png',
+  './icons/apple-touch-icon-180.png',
+  './icons/favicon-32.png',
+  './icons/favicon-16.png',
+  './icons/favicon.ico'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
+    caches.open(CACHE_NAME).then((cache) =>
+      // {cache: 'reload'} на каждый Request — иначе addAll() может молча взять файл
+      // из обычного HTTP-кеша браузера (отдельный слой, не Cache API), даже когда
+      // CACHE_NAME уже новый. Найдено на реальном тесте: версия/баннер обновлялись
+      // корректно, но конкретный изменённый js/data/*.json в новом кеше оказывался
+      // старым, если браузер уже кешировал его раньше по обычным HTTP-правилам.
+      cache.addAll(APP_SHELL.map((url) => new Request(url, { cache: 'reload' })))
+    )
   );
-  self.skipWaiting();
+  // Раньше здесь был безусловный self.skipWaiting() — новый worker активировался
+  // мгновенно при каждом обновлении, минуя баннер и любое решение врача. Теперь
+  // worker ждёт в состоянии "installed", пока страница явно не пришлёт SKIP_WAITING
+  // (после нажатия "Обновить" на баннере, см. app.js) — см. message-обработчик ниже.
+});
+
+// Явная команда от страницы — единственный способ перевести ожидающий worker
+// в активное состояние. Вызывается из app.js по нажатию "Обновить" на баннере.
+self.addEventListener('message', (event) => {
+  if (event.data === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
