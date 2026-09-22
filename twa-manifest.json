@@ -1,0 +1,40 @@
+{
+  "packageId": "ru.zilab.rosdiagnoz",
+  "host": "md.zilab.ru",
+  "name": "РосДиагноз",
+  "launcherName": "РосДиагноз",
+  "display": "standalone",
+  "themeColor": "#146C7A",
+  "themeColorDark": "#146C7A",
+  "navigationColor": "#F3F5F7",
+  "navigationColorDark": "#F3F5F7",
+  "navigationDividerColor": "#00000000",
+  "navigationDividerColorDark": "#00000000",
+  "backgroundColor": "#F3F5F7",
+  "enableNotifications": false,
+  "enableSiteSettingsShortcut": false,
+  "startUrl": "/index.html",
+  "iconUrl": "https://md.zilab.ru/icons/icon-512.png",
+  "maskableIconUrl": "https://md.zilab.ru/icons/icon-maskable-512.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "rosdiagnoz"
+  },
+  "appVersionName": "1.20.5",
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://md.zilab.ru/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableArCore": false,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://md.zilab.ru/",
+  "minSdkVersion": 21,
+  "orientation": "portrait"
+}
