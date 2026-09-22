@@ -77,7 +77,7 @@ html, body {
 .contact-links { margin: 6px 0 0; }
 .contact-links a { color: var(--accent-text); font-weight: 500; }
 
-.version-line { text-align: center; margin-top: 18px; }
+.version-line { text-align: left; margin-top: 18px; }
 .eyebrow { font-size: 12px; color: var(--text-muted); margin: 0 0 2px; }
 h1 { font-size: 19px; font-weight: 600; margin: 0; }
 
@@ -154,6 +154,31 @@ select, input[type="text"], input[type="number"] {
   padding: 0 8px;
   background: var(--surface);
   color: var(--text-primary);
+}
+
+/* Свободные текстовые поля мастера — раньше были однострочным input[type=text] (см.
+   дневник обновлений): при вводе текст скроллился вбок внутри фиксированной высоты,
+   виден был только хвост набранного. Теперь — textarea, растущая по высоте под контент
+   (см. createFreetextArea/autoGrowTextarea в app.js); ширина не меняется — 100% родителя,
+   тот же принцип, что и раньше у обычных input. min-height подобран так, чтобы одна
+   строка визуально совпадала с прежней высотой 34px однострочного поля. */
+textarea.freetext-area {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 8px;
+  background: var(--surface);
+  color: var(--text-primary);
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .inline-fields { display: flex; gap: 8px; margin-top: 8px; }
 

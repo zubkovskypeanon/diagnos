@@ -21,6 +21,95 @@ const state = {
 
 const root = document.getElementById('app');
 
+// ---------- Навигация: синхронизация с историей браузера ----------
+// Каждый показанный экран (кроме промежуточных skipIf-страниц, которые никогда не
+// становятся pageIndex — см. nextVisibleIndex/prevVisibleIndex) получает одну запись в
+// history, чтобы системная/аппаратная кнопка "Назад" уводила на предыдущий экран, а не
+// сразу закрывала приложение. Единственная запись без "предыдущей" — стартовый экран
+// разделов (depth 0, выставляется replaceState при загрузке, см. низ файла) — с неё
+// "назад" закрывает приложение штатно, записей ниже нет.
+//
+// state.answers сознательно НЕ входит в снимок экрана: это один изменяемый объект на
+// всю сессию нозологии, как и было до этого механизма, — переход по истории меняет
+// только то, какой экран показан, а не то, что в него уже введено.
+let navDepth = 0;
+
+function currentScreenSnapshot() {
+  if (state.nosologyId !== null) {
+    if (state.icdPageOpen) {
+      return { screen: 'icd', nosologyId: state.nosologyId, pageIndex: state.pageIndex };
+    }
+    if (state.patientHandoffOpen) {
+      return { screen: 'handoff', nosologyId: state.nosologyId, pageIndex: state.pageIndex, handoff: state.patientHandoffOpen };
+    }
+    return { screen: 'wizard', nosologyId: state.nosologyId, pageIndex: state.pageIndex };
+  }
+  if (state.aboutOpen) return { screen: 'about' };
+  if (state.sectionId) return { screen: 'section', sectionId: state.sectionId };
+  return { screen: 'home' };
+}
+
+// Вызывается ПОСЛЕ изменения state и ПЕРЕД рендером нового экрана — только для переходов
+// "вперёд" (открыли раздел/нозологию/следующую страницу мастера/МКБ/передачу пациенту/
+// о программе, нажали "К списку разделов"). Возврат назад всегда идёт через
+// history.back()/history.go() — см. restoreScreen ниже, там pushScreen() не вызывается,
+// экран уже меняет сам браузер, и одно и то же восстановление обслуживает и системную
+// кнопку "Назад", и вызовы из кода.
+function pushScreen() {
+  navDepth++;
+  const snap = currentScreenSnapshot();
+  snap.depth = navDepth;
+  history.pushState(snap, '');
+}
+
+async function ensureAboutLoaded() {
+  if (!state.about) {
+    const res = await fetch('js/data/about.json');
+    state.about = await res.json();
+  }
+}
+
+// Восстановление экрана по снимку из history.state (popstate — и системная "Назад", и
+// history.back()/history.go() из кода дают один и тот же путь и одну логику регрессии).
+async function restoreScreen(snapshot) {
+  if (!snapshot) snapshot = { screen: 'home', depth: 0 };
+  navDepth = snapshot.depth || 0;
+
+  if (snapshot.screen === 'home' || snapshot.screen === 'section' || snapshot.screen === 'about') {
+    // Экраны без активной нозологии — обязательно сбрасываем "хвост" от предыдущей
+    // работы в мастере: иначе следующий currentScreenSnapshot() (напр. клик по другому
+    // разделу) ошибочно распознает экран как "wizard" по одному лишь nosologyId,
+    // который иначе никогда не обнуляется (так было и до этого механизма).
+    state.nosologyId = null;
+    state.data = null;
+    state.icdPageOpen = false;
+    state.patientHandoffOpen = null;
+    state.aboutOpen = snapshot.screen === 'about';
+    state.sectionId = snapshot.screen === 'section' ? snapshot.sectionId : null;
+    if (snapshot.screen === 'about') await ensureAboutLoaded();
+    renderHome();
+    return;
+  }
+
+  // wizard/icd/handoff — нужны данные нозологии в памяти. Восстановление работает только
+  // в рамках одной живой сессии страницы: state.data не переживает перезагрузку — это уже
+  // существующее ограничение (ответы врача нигде не персистятся), не новое, добавленное
+  // этим механизмом. Если нозология не та, что сейчас в памяти, — откат на главный экран,
+  // а не попытка угадать/перезагрузить с потерей ответов молча.
+  if (state.nosologyId !== snapshot.nosologyId || !state.data) {
+    state.aboutOpen = false;
+    state.sectionId = null;
+    renderHome();
+    return;
+  }
+  state.pageIndex = snapshot.pageIndex;
+  state.icdPageOpen = snapshot.screen === 'icd';
+  state.patientHandoffOpen = snapshot.screen === 'handoff' ? snapshot.handoff : null;
+  renderPage();
+}
+
+window.addEventListener('popstate', (e) => { restoreScreen(e.state); });
+
 // ---------- Загрузка данных ----------
 async function loadIndex() {
   const res = await fetch('js/data/index.json');
@@ -127,7 +216,7 @@ function renderNosologyCards(container, list, opts) {
 function renderSectionGrid() {
   root.innerHTML = '';
   const header = el('div', 'header');
-  header.innerHTML = '<p class="eyebrow">Формулировка диагноза</p><h1>Выбери раздел</h1>';
+  header.innerHTML = '<p class="eyebrow">РосДиагноз</p><h1>Выбери раздел</h1>';
   root.appendChild(header);
 
   const search = document.createElement('input');
@@ -154,7 +243,7 @@ function renderSectionGrid() {
         const card = el('div', 'card option');
         card.innerHTML = `<span class="option-label">${items[0].sectionName}</span>` +
           `<span class="badge">${items.length} ${pluralRu(items.length, ['нозология', 'нозологии', 'нозологий'])}</span>`;
-        card.onclick = () => { state.sectionId = sectionId; renderHome(); };
+        card.onclick = () => { state.sectionId = sectionId; pushScreen(); renderHome(); };
         resultsEl.appendChild(card);
       });
       return;
@@ -178,22 +267,24 @@ function renderSectionList(sectionId) {
   root.innerHTML = '';
   const items = state.index.filter(i => i.section === sectionId);
 
-  const back = el('button', 'back-link');
-  back.innerHTML = '<i class="ti ti-chevron-left"></i> Все разделы';
-  back.onclick = () => { state.sectionId = null; renderHome(); };
-  root.appendChild(back);
-
   const header = el('div', 'header');
-  header.innerHTML = `<p class="eyebrow">Формулировка диагноза</p><h1>${items[0] ? items[0].sectionName : ''}</h1>`;
+  header.innerHTML = `<p class="eyebrow">РосДиагноз</p><h1>${items[0] ? items[0].sectionName : ''}</h1>`;
   root.appendChild(header);
 
   const listEl = el('div', 'stack');
   renderNosologyCards(listEl, items);
   root.appendChild(listEl);
+
+  const nav = el('div', 'nav-row');
+  const toGrid = el('button', 'primary-btn');
+  toGrid.textContent = 'К списку разделов';
+  toGrid.onclick = goToHome;
+  nav.appendChild(toGrid);
+  root.appendChild(nav);
 }
 
 // Диспетчер главного экрана — единственная точка входа, вызывается вместо
-// renderNosologyList из init() и из "К списку нозологий" (см. renderNav).
+// renderNosologyList из init() и из "К списку разделов" (см. renderNav).
 // Поле поиска существует только на экране разделов (renderSectionGrid) — отдельной
 // ветки на state.searchQuery здесь не нужно: sectionId остаётся null, пока идёт поиск,
 // поэтому обычная проверка sectionId уже направляет куда нужно.
@@ -207,16 +298,9 @@ function renderHome() {
 }
 
 async function openAbout() {
-  if (!state.about) {
-    const res = await fetch('js/data/about.json');
-    state.about = await res.json();
-  }
+  await ensureAboutLoaded();
   state.aboutOpen = true;
-  renderHome();
-}
-
-function closeAbout() {
-  state.aboutOpen = false;
+  pushScreen();
   renderHome();
 }
 
@@ -233,14 +317,18 @@ function renderAboutPage() {
 
   const back = el('button', 'back-link');
   back.innerHTML = '<i class="ti ti-chevron-left"></i> Назад';
-  back.onclick = closeAbout;
+  back.onclick = () => history.back();
   root.appendChild(back);
 
   const header = el('div', 'header');
-  header.innerHTML = '<p class="eyebrow">Формулировка диагноза</p><h1>О программе</h1>';
+  header.innerHTML = '<p class="eyebrow">РосДиагноз</p><h1>О программе</h1>';
   root.appendChild(header);
 
   const stack = el('div', 'stack');
+
+  const versionLine = el('p', 'option-hint version-line');
+  versionLine.textContent = `Версия ${VERSION}` + (typeof BUILD_DATE !== 'undefined' ? ` · ${formatRuDate(BUILD_DATE)}` : '');
+  stack.appendChild(versionLine);
 
   a.idea.forEach(p => {
     const box = el('div', 'note');
@@ -248,19 +336,8 @@ function renderAboutPage() {
     stack.appendChild(box);
   });
 
-  const teamLabel = el('p', 'group-label');
-  teamLabel.textContent = 'Рабочая группа';
-  stack.appendChild(teamLabel);
-
-  a.team.forEach(person => {
-    const card = el('div', 'card');
-    card.innerHTML = `<p class="option-title">${person.name} — ${person.role}</p>` +
-      `<p class="option-hint">${person.contribution}</p>`;
-    stack.appendChild(card);
-  });
-
   const inviteLabel = el('p', 'group-label');
-  inviteLabel.textContent = 'Расширение рабочей группы';
+  inviteLabel.textContent = 'Сотрудничество';
   stack.appendChild(inviteLabel);
 
   // Ссылки на контакт добавляем только если они реально заданы в about.json —
@@ -273,9 +350,16 @@ function renderAboutPage() {
     (contactLinks.length ? `<p class="contact-links">${contactLinks.join(' · ')}</p>` : '');
   stack.appendChild(invite);
 
-  const versionLine = el('p', 'option-hint version-line');
-  versionLine.textContent = `Версия ${VERSION}` + (typeof BUILD_DATE !== 'undefined' ? ` · ${formatRuDate(BUILD_DATE)}` : '');
-  stack.appendChild(versionLine);
+  const teamLabel = el('p', 'group-label');
+  teamLabel.textContent = 'Рабочая группа';
+  stack.appendChild(teamLabel);
+
+  a.team.forEach(person => {
+    const card = el('div', 'card');
+    card.innerHTML = `<p class="option-title">${person.name} — ${person.role}</p>` +
+      `<p class="option-hint">${person.contribution}</p>`;
+    stack.appendChild(card);
+  });
 
   root.appendChild(stack);
 }
@@ -287,6 +371,7 @@ async function openNosology(item) {
   state.answers = {};
   state.icdPageOpen = false;
   state.patientHandoffOpen = null;
+  pushScreen();
   renderPage();
 }
 
@@ -430,13 +515,24 @@ function renderSingle(page) {
     const ff = page.freetextField;
     const stateKey = page.id + '__' + ff.key;
     const row = el('div', 'inline-fields');
-    const input = document.createElement('input');
-    input.type = ff.type || 'text';
-    if (input.type === 'number') input.step = ff.step || '0.1';
-    input.placeholder = ff.placeholder || '';
-    input.value = state.answers[stateKey] || '';
-    input.oninput = () => { state.answers[stateKey] = input.value; };
-    commitOnEnter(input);
+    let input;
+    if (ff.type === 'number') {
+      input = document.createElement('input');
+      input.type = 'number';
+      input.step = ff.step || '0.1';
+      input.placeholder = ff.placeholder || '';
+      input.value = state.answers[stateKey] || '';
+      input.oninput = () => { state.answers[stateKey] = input.value; };
+      commitOnEnter(input);
+    } else {
+      input = createFreetextArea({
+        placeholder: ff.placeholder,
+        value: state.answers[stateKey],
+        oninput: (v) => { state.answers[stateKey] = v; }
+      });
+      input.style.flex = '1 1 160px';
+      input.style.minWidth = '0';
+    }
     row.appendChild(input);
     if (ff.unit) {
       const unitLabel = el('span', null);
@@ -744,12 +840,11 @@ function renderMulti(page) {
         // fld.type === 'freetext' — текстовое поле вместо select, для случаев, когда
         // КР не даёт формального перечня значений (напр. локализация стеноза у ЯБ).
         if (fld.type === 'freetext') {
-          const input = document.createElement('input');
-          input.type = 'text';
-          input.placeholder = fld.placeholder || '';
-          input.value = answer[fld.key] || '';
-          input.oninput = () => { answer[fld.key] = input.value; state.answers.findings[item.id] = answer; };
-          commitOnEnter(input);
+          const input = createFreetextArea({
+            placeholder: fld.placeholder,
+            value: answer[fld.key],
+            oninput: (v) => { answer[fld.key] = v; state.answers.findings[item.id] = answer; }
+          });
           target.appendChild(input);
           return;
         }
@@ -781,12 +876,11 @@ function renderMulti(page) {
     }
 
     if (answer.checked && item.kind === 'freetext') {
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.placeholder = item.placeholder || '';
-      input.value = answer.value || '';
-      input.oninput = () => { answer.value = input.value; state.answers.findings[item.id] = answer; };
-      commitOnEnter(input);
+      const input = createFreetextArea({
+        placeholder: item.placeholder,
+        value: answer.value,
+        oninput: (v) => { answer.value = v; state.answers.findings[item.id] = answer; }
+      });
       card.appendChild(input);
     }
 
@@ -867,12 +961,13 @@ function renderCompoundPage(page) {
   const row = el('div', 'inline-fields');
   page.fields.forEach(fld => {
     if (fld.type === 'freetext') {
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.placeholder = fld.placeholder || '';
-      input.value = values[fld.key] || '';
-      input.oninput = () => { values[fld.key] = input.value; };
-      commitOnEnter(input);
+      const input = createFreetextArea({
+        placeholder: fld.placeholder,
+        value: values[fld.key],
+        oninput: (v) => { values[fld.key] = v; }
+      });
+      input.style.flex = '1 1 160px';
+      input.style.minWidth = '0';
       row.appendChild(input);
       return;
     }
@@ -1264,6 +1359,7 @@ function openPatientHandoff(locator) {
   const { scale, answer, valueKey, isSum } = resolveScaleContext(locator);
   answer[valueKey] = isSum ? {} : undefined;
   state.patientHandoffOpen = locator;
+  pushScreen();
   renderPage();
 }
 
@@ -1318,8 +1414,7 @@ function renderPatientHandoffPage() {
   back.textContent = 'Назад';
   back.onclick = () => {
     answer[valueKey] = isSum ? {} : undefined;
-    state.patientHandoffOpen = null;
-    renderPage();
+    history.back();
   };
   nav.appendChild(back);
 
@@ -1345,8 +1440,7 @@ function renderPatientHandoffPage() {
       // уже лежит прямо в answer[valueKey] — отдельного поля с суммой не нужно.
       answer[valueKey + 'Score'] = computeCatScore(scale, answer[valueKey]);
     }
-    state.patientHandoffOpen = null;
-    renderPage();
+    history.back();
   };
   nav.appendChild(done);
   root.appendChild(nav);
@@ -1382,13 +1476,11 @@ function renderOptionFreetext(opt, pageId) {
     wrap.appendChild(note);
   }
 
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = ff.placeholder || '';
-  input.value = state.answers[stateKey] || '';
-  input.style.width = '100%';
-  input.oninput = () => { state.answers[stateKey] = input.value; };
-  commitOnEnter(input);
+  const input = createFreetextArea({
+    placeholder: ff.placeholder,
+    value: state.answers[stateKey],
+    oninput: (v) => { state.answers[stateKey] = v; }
+  });
   wrap.appendChild(input);
 
   if (ff.hint) {
@@ -2554,7 +2646,7 @@ function renderResultBlock() {
     icdBtn.innerHTML = state.answers.icdCode
       ? `<i class="ti ti-pencil"></i>Код МКБ-10: ${state.answers.icdCode}`
       : '<i class="ti ti-plus"></i>Добавить код МКБ';
-    icdBtn.onclick = () => { state.icdPageOpen = true; renderPage(); };
+    icdBtn.onclick = () => { state.icdPageOpen = true; pushScreen(); renderPage(); };
     wrap.appendChild(icdBtn);
   }
 
@@ -2600,7 +2692,7 @@ function renderIcdPage() {
   const nav = el('div', 'nav-row');
   const done = el('button', 'primary-btn');
   done.textContent = 'Готово';
-  done.onclick = () => { state.icdPageOpen = false; renderPage(); };
+  done.onclick = () => history.back();
   nav.appendChild(done);
   root.appendChild(nav);
 }
@@ -2611,18 +2703,18 @@ function renderNav(page) {
   if (state.pageIndex > 0) {
     const back = el('button', 'secondary-btn');
     back.textContent = 'Назад';
-    back.onclick = () => { state.pageIndex = prevVisibleIndex(state.pageIndex); renderPage(); };
+    back.onclick = () => history.back();
     wrap.appendChild(back);
   } else {
     const back = el('button', 'secondary-btn');
-    back.textContent = 'К списку нозологий';
+    back.textContent = 'К списку разделов';
     back.onclick = goToHome;
     wrap.appendChild(back);
   }
 
   if (isEffectivelyLastPage(state.pageIndex)) {
     const toList = el('button', 'primary-btn');
-    toList.textContent = 'К списку нозологий';
+    toList.textContent = 'К списку разделов';
     toList.onclick = goToHome;
     wrap.appendChild(toList);
   } else {
@@ -2631,6 +2723,7 @@ function renderNav(page) {
     next.onclick = () => {
       if (!canProceed(page)) return;
       state.pageIndex = nextVisibleIndex(state.pageIndex);
+      pushScreen();
       renderPage();
     };
     wrap.appendChild(next);
@@ -2683,23 +2776,82 @@ function commitOnEnter(input) {
   });
 }
 
+// Высота textarea под фактический текст (вместо горизонтального скролла внутри
+// однострочного input[type=text], который скрывал всё, кроме последнего слова, — см.
+// дневник обновлений). Ширина не меняется, растёт только высота. Вызывается и на
+// oninput, и сразу при создании (см. createFreetextArea) — иначе при повторном заходе
+// на страницу уже введённый длинный текст покажется свёрнутым в одну строку, пока
+// врач не начнёт печатать заново.
+function autoGrowTextarea(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = ta.scrollHeight + 'px';
+}
+
+// Свободное текстовое поле (диагностическая формулировка вручную) — везде, где раньше
+// был однострочный input[type=text]. commitOnEnter не меняет поведение: preventDefault
+// на Enter по-прежнему блокирует перенос строки самим Enter (только принудительный
+// renderPage()), так что поле остаётся однострочным по смыслу, просто видно целиком за
+// счёт переноса по ширине, а не обрезано по высоте. autoGrow — отложенным вызовом
+// (requestAnimationFrame), т.к. scrollHeight корректен только после того, как элемент
+// реально встроен в DOM и получил раскладку, а на момент создания он ещё не appendChild'нут.
+function createFreetextArea({ placeholder, value, oninput, className }) {
+  const ta = document.createElement('textarea');
+  ta.rows = 1;
+  ta.className = 'freetext-area' + (className ? ' ' + className : '');
+  ta.placeholder = placeholder || '';
+  ta.value = value || '';
+  ta.oninput = () => { oninput(ta.value); autoGrowTextarea(ta); };
+  commitOnEnter(ta);
+  requestAnimationFrame(() => autoGrowTextarea(ta));
+  return ta;
+}
+
 // ---------- Инициализация ----------
 async function init() {
   if (!state.index) state.index = await loadIndex();
   renderHome();
 }
 
-// "К списку нозологий" в мастере (см. renderNav) ведёт на стартовый экран разделов,
-// а не в тот раздел, откуда врач зашёл — по прямому решению врача (правка после
+// "К списку разделов" в мастере (см. renderNav) ведёт на стартовый экран разделов,
+// а не в тот раздел/шаг, откуда врач зашёл, — по прямому решению врача (правка после
 // более раннего варианта, где sectionId нарочно сохранялся между заходами в мастер).
+// С историей браузера это цель, а не "шаг назад": реализовано как схлопывание всех
+// записей, накопленных с момента ухода с главного экрана (history.go(-navDepth) —
+// один прыжок сразу на depth 0, которая всегда "home", см. replaceState ниже), а не
+// как проталкивание новой записи "вперёд" — иначе после этой кнопки одно нажатие
+// системной "Назад" неожиданно возвращало бы обратно в мастер, а не закрывало
+// приложение. history.go асинхронен: перерисовку делает popstate -> restoreScreen.
 function goToHome() {
-  state.pageIndex = -1;
-  state.sectionId = null;
   state.searchQuery = '';
-  init();
+  if (navDepth > 0) {
+    history.go(-navDepth);
+    return;
+  }
+  state.pageIndex = -1;
+  state.nosologyId = null;
+  state.data = null;
+  state.icdPageOpen = false;
+  state.patientHandoffOpen = null;
+  state.sectionId = null;
+  renderHome();
 }
 
-init();
+history.replaceState({ screen: 'home', depth: 0 }, '');
+
+// ---------- Сплэш-экран ----------
+// Показываем логотип не меньше фиксированных 2 секунд (по решению врача — раньше
+// длительность зависела от скорости загрузки и "мелькала" каждый раз по-разному), но и
+// не убираем раньше, чем реально готов контент — иначе между сплэшем и отрисовкой мелькнёт
+// пустой экран на медленной сети/холодном кеше. .catch() на init() — чтобы сбой загрузки
+// index.json не оставил сплэш висеть навсегда поверх (пусть даже сломанного) экрана.
+const SPLASH_MIN_MS = 2000;
+const splashMinDelay = new Promise((resolve) => setTimeout(resolve, SPLASH_MIN_MS));
+Promise.all([init().catch((e) => console.error('init() failed:', e)), splashMinDelay]).then(() => {
+  const splash = document.getElementById('splash');
+  if (!splash) return;
+  splash.classList.add('hide');
+  setTimeout(() => splash.remove(), 300);
+});
 
 // ---------- Service worker + баннер обновления ----------
 if ('serviceWorker' in navigator) {

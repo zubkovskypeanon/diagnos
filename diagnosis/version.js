@@ -6,7 +6,7 @@
 //   - service-worker.js (importScripts) — для CACHE_NAME
 //   - index.html (<script>, до js/app.js) — глобальная переменная VERSION
 //     для отображения на экране «О программе»
-const VERSION = '1.20.2';
+const VERSION = '1.20.5';
 // Дата релиза, тот же ручной процесс, что и VERSION — используется только для
 // отображения на экране «О программе» (полезно при разборе багрепортов от коллег).
-const BUILD_DATE = '2026-09-21';
+const BUILD_DATE = '2026-09-22';
