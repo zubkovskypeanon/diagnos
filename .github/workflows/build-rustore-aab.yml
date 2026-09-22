@@ -32,9 +32,16 @@ jobs:
       # сохраняется — при следующем запуске снова стартует с закоммиченного значения,
       # и RuStore отклонит билд с уже использованным versionCode. Поэтому bump — вручную
       # в twa-manifest.json перед запуском, когда он реально нужен (см. комментарий выше).
+      #
+      # "yes |" + "-i": при первой установке компонентов Android SDK инструмент спрашивает
+      # согласие с лицензией ("Accept? (y/N):") в интерактивном режиме — раннер GitHub
+      # не даёт настоящего терминала, без этого запрос всегда получает пустой ответ,
+      # трактуется как отказ, и компонент не ставится (ровно это уронило первый прогон).
+      # "yes" непрерывно шлёт "y" в stdin контейнера на любой такой запрос, "-i" держит
+      # stdin контейнера открытым, чтобы было куда это "y" принять.
       - name: Regenerate Android project from twa-manifest.json
         run: |
-          docker run --rm \
+          yes | docker run --rm -i \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
             ghcr.io/googlechromelabs/bubblewrap:1.25.0 \
@@ -45,7 +52,7 @@ jobs:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          docker run --rm \
+          yes | docker run --rm -i \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
             -e BUBBLEWRAP_KEYSTORE_PASSWORD \
