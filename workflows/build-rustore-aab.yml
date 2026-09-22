@@ -1,0 +1,61 @@
+# Сборка Android-обёртки (TWA) РосДиагноза для RuStore.
+# Запускается только вручную (workflow_dispatch) — не на каждый push, потому что
+# пересборка нужна лишь при изменении самой нативной оболочки (см. дневник обновлений
+# в проекте Claude): имя пакета, ключ подписи, разрешения, домен, иконка/сплэш уровня ОС.
+# Обычные обновления контента идут через сам сайт и service worker, эта сборка их не трогает.
+#
+# Использует официальный образ ghcr.io/googlechromelabs/bubblewrap — там уже установлены
+# JDK и Android SDK нужных версий, поэтому раннер GitHub ничего сам не докачивает и не
+# зависит от того, что у него предустановлено (это периодически меняется).
+name: Build RuStore AAB (TWA)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore signing keystore from secret
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android.keystore
+
+      # Регенерирует Android-проект из twa-manifest.json (не интерактивный init, а update —
+      # он читает уже готовый twa-manifest.json из репозитория, ничего не спрашивает).
+      # --skipVersionUpgrade: bubblewrap update по умолчанию сам поднимает appVersionCode
+      # при каждом запуске, но это изменение живёт только в рамках job'а и никуда не
+      # сохраняется — при следующем запуске снова стартует с закоммиченного значения,
+      # и RuStore отклонит билд с уже использованным versionCode. Поэтому bump — вручную
+      # в twa-manifest.json перед запуском, когда он реально нужен (см. комментарий выше).
+      - name: Regenerate Android project from twa-manifest.json
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ghcr.io/googlechromelabs/bubblewrap:1.25.0 \
+            update --skipVersionUpgrade
+
+      - name: Build and sign AAB
+        env:
+          BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            -e BUBBLEWRAP_KEYSTORE_PASSWORD \
+            -e BUBBLEWRAP_KEY_PASSWORD \
+            ghcr.io/googlechromelabs/bubblewrap:1.25.0 \
+            build
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: rosdiagnoz-release-aab
+          path: app-release-bundle.aab
+          retention-days: 90
